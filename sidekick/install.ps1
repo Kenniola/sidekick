@@ -20,15 +20,18 @@ Write-Host ""
 
 # --- ARM64 compatibility check ---
 $arch = $env:PROCESSOR_ARCHITECTURE
-$SkipExtras = $false
+$PythonFlag = @()  # extra args for uv tool install
 if ($arch -eq 'ARM64') {
     if ($Features -in @('azure', 'all')) {
         Write-Host "[!] Azure Speech SDK does not support Windows ARM64." -ForegroundColor Red
+        Write-Host "    Falling back to 'live' (Whisper via x64 emulation)." -ForegroundColor Yellow
+        $Features = 'live'
     }
-    if ($Features -in @('live', 'azure', 'all')) {
-        Write-Host "[!] PyAudioWPatch has no ARM64 wheels - live audio capture unavailable." -ForegroundColor Yellow
-        Write-Host "    Installing base package. Research, offerings, prototyping still work." -ForegroundColor Yellow
-        $SkipExtras = $true
+    if ($Features -in @('live', 'all')) {
+        # Live deps (numpy, PyAudioWPatch, faster-whisper) only ship x64 wheels.
+        # Windows ARM64 runs x64 apps via emulation, so we install with x64 Python.
+        Write-Host "[i] ARM64 detected - installing with x64 Python for live audio support." -ForegroundColor Yellow
+        $PythonFlag = @("--python", "cpython-3.11-windows-x86_64")
     }
 } elseif ($Features -in @('azure', 'all')) {
     Write-Host "[i] Azure Speech SDK selected - requires an Azure Speech resource." -ForegroundColor Yellow
@@ -90,9 +93,9 @@ if (-not $ghCmd) {
 # TODO: Replace with actual repo URL or PyPI name when decided
 $RepoUrl = "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick"
 
-Write-Host "Installing sidekick-copilot$(if (-not $SkipExtras) { "[$Features]" })..."
-$installPkg = if (-not $SkipExtras) { "sidekick-copilot[$Features] @ $RepoUrl" } else { "sidekick-copilot @ $RepoUrl" }
-uv tool install $installPkg --force
+Write-Host "Installing sidekick-copilot[$Features]..."
+$installPkg = "sidekick-copilot[$Features] @ $RepoUrl"
+uv tool install $installPkg --force @PythonFlag
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[X] uv tool install failed" -ForegroundColor Red
     exit 1
