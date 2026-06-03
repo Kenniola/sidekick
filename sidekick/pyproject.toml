@@ -44,3 +44,4 @@ packages = ["src/sidekick"]
 [tool.hatch.build.targets.wheel.force-include]
 "configs/default.yaml" = "sidekick/configs/default.yaml"
 "configs/_template.yaml" = "sidekick/configs/_template.yaml"
+"src/sidekick/extensions/sidekick-notify.vsix" = "sidekick/extensions/sidekick-notify.vsix"
