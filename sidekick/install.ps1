@@ -18,17 +18,20 @@ Write-Host ""
 Write-Host "=== Sidekick Installer ===" -ForegroundColor Cyan
 Write-Host ""
 
-# --- ARM64 + Azure check ---
-if ($Features -in @('azure', 'all')) {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    if ($arch -eq 'Arm64') {
+# --- ARM64 compatibility check ---
+$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+if ($arch -eq 'Arm64') {
+    if ($Features -in @('azure', 'all')) {
         Write-Host "[!] Azure Speech SDK does not support Windows ARM64." -ForegroundColor Red
-        Write-Host "    Falling back to 'live' (Whisper backend)." -ForegroundColor Yellow
-        $Features = 'live'
-    } else {
-        Write-Host "[i] Azure Speech SDK selected — requires an Azure Speech resource." -ForegroundColor Yellow
-        Write-Host "    Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in ~/.sidekick/customers.yaml" -ForegroundColor Yellow
     }
+    if ($Features -in @('live', 'azure', 'all')) {
+        Write-Host "[!] PyAudioWPatch has no ARM64 wheels — live audio capture unavailable." -ForegroundColor Yellow
+        Write-Host "    Installing base package (research, offerings, prototyping still work)." -ForegroundColor Yellow
+        $Features = $null  # install without extras
+    }
+} elseif ($Features -in @('azure', 'all')) {
+    Write-Host "[i] Azure Speech SDK selected — requires an Azure Speech resource." -ForegroundColor Yellow
+    Write-Host "    Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in ~/.sidekick/customers.yaml" -ForegroundColor Yellow
 }
 
 # --- Step 1: Ensure uv is installed ---
@@ -86,8 +89,9 @@ if (-not $ghCmd) {
 # TODO: Replace with actual repo URL or PyPI name when decided
 $RepoUrl = "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick"
 
-Write-Host "Installing sidekick-copilot[$Features]..."
-uv tool install "sidekick-copilot[$Features] @ $RepoUrl" --force
+Write-Host "Installing sidekick-copilot$(if ($Features) { "[$Features]" })..."
+$installPkg = if ($Features) { "sidekick-copilot[$Features] @ $RepoUrl" } else { "sidekick-copilot @ $RepoUrl" }
+uv tool install $installPkg --force
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[X] uv tool install failed" -ForegroundColor Red
     exit 1
