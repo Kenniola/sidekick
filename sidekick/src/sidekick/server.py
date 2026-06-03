@@ -564,7 +564,7 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
     listen again with confirmed=True once the user agrees.
 
     Args:
-        config: Customer config name (e.g., 'hmrc', 'moj'). Defaults to 'default'.
+        config: Customer config name (e.g., 'acme'). Defaults to 'default'.
         confirmed: Set to True after the user consents to audio transcription.
     """
     global _audio_capture, _recogniser, _listen_task

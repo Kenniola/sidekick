@@ -65,7 +65,7 @@ All tiers retry with exponential backoff (1s → 2s → 4s) and fall through the
 
 ```
 @sidekick listen                 # default config
-@sidekick listen --config hmrc   # customer profile
+@sidekick listen --config acme   # customer profile
 ```
 
 ---
@@ -112,16 +112,16 @@ Returns ranked questions with category, impact, rationale, corrections, observat
 Single-file system at `~/.sidekick/customers.yaml`. Profiles deep-merge over `default.yaml` — only specify overrides.
 
 ```yaml
-hmrc:
-  customer: HMRC
+acme:
+  customer: Acme Corp
   participants:
     consultant: ["Your Name"]
-  domains: [Microsoft Fabric, AWS S3 Integration]
+  domains: [Microsoft Fabric, Data Warehousing]
   sensitivity:
     trigger_threshold: 0.6
   triggers:
     client_topics:
-      - pattern: "S3|AWS|bucket|egress"
+      - pattern: "migration|cutover|timeline"
         action: research
 ```
 
@@ -141,7 +141,7 @@ pip install -e ".[azure]"
 
 Add to your profile:
 ```yaml
-hmrc:
+acme:
   speech:
     backend: azure
     azure_region: uksouth
