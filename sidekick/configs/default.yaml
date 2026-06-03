@@ -1,0 +1,67 @@
+# Sidekick — Base configuration
+# Customer configs inherit from this file. Only override what differs.
+
+customer: General
+description: "Default configuration — template for new customers"
+
+participants:
+  consultant: []     # Add your name: ["Your Name"]
+  client: ["*"]
+
+domains:
+  - Microsoft Fabric
+  - Power BI
+  - Azure Data Platform
+
+sensitivity:
+  trigger_threshold: 0.5
+  noise_filter: medium
+  analyst_interval_seconds: 10
+  verify_consultant_answers: true
+  show_verifications: corrections_only
+
+queue:
+  fast_lane_max: 3
+  standard_lane_max: 2
+  deep_lane_max: 1
+  stale_expiry_minutes: 5
+
+phases:
+  opening_minutes: 5
+  wrapup_keywords:
+    - "next steps"
+    - "action items"
+    - "to summarise"
+    - "wrap up"
+    - "before we go"
+
+triggers:
+  client_topics: []
+  consultant_hedges:
+    - "I'll get back to you"
+    - "I'll have to check"
+    - "let me verify"
+    - "let me confirm"
+    - "I'm not 100% sure"
+    - "that's a good question"
+
+grounding:
+  repo_paths:
+    - ".github/instructions/"
+  microsoft_learn: true
+
+output:
+  auto_save: true
+  include_session_summary: true
+
+speech:
+  backend: whisper                     # 'whisper' (local, default) or 'azure' (requires Speech resource)
+  # azure_region: uksouth             # uncomment + set for Azure Speech
+  # azure_endpoint: ""                # your *.cognitiveservices.azure.com URL
+  language: en-GB
+  # To revert to local Whisper, set backend: whisper
+
+rules:
+  - Always distinguish GA vs Preview features
+  - Cite sources for every claim
+  - State uncertainty explicitly

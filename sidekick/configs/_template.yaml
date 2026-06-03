@@ -1,0 +1,62 @@
+# Sidekick — Customer Profile Template
+# Copy this section into ~/.sidekick/customers.yaml and customise.
+#
+# Only include fields you want to override — everything else is inherited
+# from the built-in defaults.
+#
+# Usage: @sidekick listen --config acme
+
+acme:                                  # Profile name (used in --config)
+  customer: Acme Corp                  # Customer display name
+  description: "Data platform migration and Power BI modernisation"
+
+  participants:
+    consultant: ["Your Name"]          # Your name(s) for speaker identification
+
+  # Add customer-specific domains beyond the defaults
+  # (Fabric, Power BI, Azure Data Platform are always included)
+  domains:
+    - Microsoft Fabric
+    - Power BI
+    - Azure Data Platform
+    # - AWS S3 Integration             # uncomment if relevant
+    # - PostgreSQL
+    # - ADLS Gen2
+
+  # Lower threshold = more sensitive triggering (default: 0.7)
+  # sensitivity:
+  #   trigger_threshold: 0.6
+
+  # Trigger patterns — detect customer topics and route to the right pipeline
+  triggers:
+    client_topics:
+      - pattern: "migration|move to Fabric|Synapse"
+        action: research
+        grounding: "Migration planning and Synapse comparison"
+      - pattern: "cost|pricing|budget|SKU|capacity"
+        action: sizing
+        grounding: "Capacity planning and Azure pricing"
+      # Add more patterns for this customer's key topics
+
+  # Where to search for relevant engagement artifacts
+  # grounding:
+  #   repo_paths:
+  #     - "acme/"                      # your engagement folder
+  #     - ".github/instructions/"
+
+  # Session outputs go to ~/.sidekick/outputs/<customer>/
+  # output:
+  #   auto_save: true
+
+  # Azure Speech (optional — default is local Whisper)
+  # speech:
+  #   backend: azure
+  #   azure_region: uksouth
+  #   azure_endpoint: "https://your-resource.cognitiveservices.azure.com/"
+  #   language: en-GB
+
+  # Customer-specific rules for the analyst
+  rules:
+    - Always distinguish GA vs Preview vs Planned features
+    - Cite sources for every technical claim
+    - State uncertainty explicitly
