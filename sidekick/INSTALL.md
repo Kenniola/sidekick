@@ -1,8 +1,16 @@
 # Sidekick — Installation Guide
 
+## Supported Platforms
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Windows x64 | Fully supported | Native install, all features |
+| Windows ARM64 | Fully supported | Installer auto-selects x64 Python; live audio runs via Windows x64 emulation |
+| macOS / Linux | Not supported | Live audio capture uses WASAPI loopback (Windows-only API) |
+
 ## Prerequisites
 
-- **Windows 10 or 11**
+- **Windows 10 or 11** (x64 or ARM64)
 - **VS Code** with the **GitHub Copilot Chat** extension
 - **GitHub Copilot license** (via your GitHub account)
 
