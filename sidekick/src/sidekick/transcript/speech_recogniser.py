@@ -354,12 +354,20 @@ def create_recogniser(speech_config=None) -> SpeechRecogniser:
             f"Use 'whisper' or 'azure'."
         )
 
+    # Check azure-cognitiveservices-speech is installed
+    try:
+        import azure.cognitiveservices.speech  # noqa: F401
+    except ImportError:
+        raise RuntimeError(
+            "Azure Speech SDK is not installed.\n"
+            "Reinstall with azure extras:\n"
+            "  irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex -Features azure"
+        )
+
     # Azure Speech — determine auth mode
     region = speech_config.azure_region
-
-    # Also check env vars as fallback (for mcp.json-level config)
-    key = speech_config.azure_key or os.environ.get("AZURE_SPEECH_KEY", "")
-    endpoint = speech_config.azure_endpoint or os.environ.get("AZURE_SPEECH_ENDPOINT", "")
+    key = speech_config.azure_key
+    endpoint = speech_config.azure_endpoint
 
     # Set language env var so AzureSpeechRecogniser picks it up
     os.environ["SIDEKICK_SPEECH_LANGUAGE"] = speech_config.language
@@ -373,11 +381,7 @@ def create_recogniser(speech_config=None) -> SpeechRecogniser:
 
     if endpoint:
         logger.info("Using Azure Speech backend (Entra ID auth, region=%s)", region)
-        resource_id = (
-            speech_config.azure_resource_id
-            or os.environ.get("AZURE_SPEECH_RESOURCE_ID", "")
-            or None
-        )
+        resource_id = speech_config.azure_resource_id or None
         return AzureSpeechRecogniser(
             region=region, endpoint=endpoint,
             resource_id=resource_id,
