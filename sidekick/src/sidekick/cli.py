@@ -81,7 +81,10 @@ def _cmd_init():
     # 5. Install sidekick-notify VS Code extension
     _install_notify_extension()
 
-    # 6. Summary
+    # 6. Deploy agent instructions to VS Code User prompts
+    _install_agent_definition()
+
+    # 7. Summary
     print("\n" + "\u2501" * 50)
     print("\u2713 Sidekick is ready!\n")
     if not gh_token:
@@ -165,6 +168,49 @@ def _install_notify_extension():
     except (subprocess.TimeoutExpired, OSError):
         print("\u26a0\ufe0f  Could not install extension automatically")
         print(f"   Run manually: code --install-extension {vsix_path}")
+
+
+def _get_vscode_prompts_path() -> Path | None:
+    """Return the VS Code User prompts directory."""
+    vscode_dir = _get_vscode_user_settings_path()
+    if not vscode_dir:
+        return None
+    return vscode_dir / "prompts"
+
+
+def _install_agent_definition():
+    """Deploy sidekick.agent.md to the VS Code User prompts folder."""
+    prompts_dir = _get_vscode_prompts_path()
+    if not prompts_dir:
+        print("\u26a0\ufe0f  VS Code User settings not found — skipping agent definition install")
+        return
+
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    agent_dest = prompts_dir / "sidekick.agent.md"
+
+    try:
+        agent_ref = importlib.resources.files("sidekick") / "agents" / "sidekick.agent.md"
+        agent_content = agent_ref.read_text(encoding="utf-8")
+    except (FileNotFoundError, TypeError):
+        print("\u26a0\ufe0f  sidekick.agent.md not found in package — skipping agent definition")
+        return
+
+    agent_dest.write_text(agent_content, encoding="utf-8")
+    print(f"\u2713 Installed agent definition at {agent_dest}")
+
+
+def _uninstall_agent_definition():
+    """Remove sidekick.agent.md from the VS Code User prompts folder."""
+    prompts_dir = _get_vscode_prompts_path()
+    if not prompts_dir:
+        return
+
+    agent_file = prompts_dir / "sidekick.agent.md"
+    if agent_file.exists():
+        agent_file.unlink()
+        print(f"\u2713 Removed agent definition from {agent_file}")
+    else:
+        print("\u2713 Agent definition not found (already removed)")
 
 
 def _register_mcp_server():
@@ -254,7 +300,8 @@ def _cmd_uninstall():
     print(f"  1. {user_dir}/ (config, cache, outputs, session logs)")
     print(f"  2. MCP server entry from VS Code User settings")
     print(f"  3. sidekick-notify VS Code extension")
-    print(f"  4. sidekick-copilot uv tool environment")
+    print(f"  4. sidekick agent definition from VS Code User prompts")
+    print(f"  5. sidekick-copilot uv tool environment")
     print()
 
     # Check --yes flag for non-interactive use
@@ -293,7 +340,10 @@ def _cmd_uninstall():
     else:
         print("\u26a0\ufe0f  VS Code CLI not found — uninstall extension manually if installed")
 
-    # 3. Remove ~/.sidekick/ directory
+    # 3. Remove agent definition from VS Code User prompts
+    _uninstall_agent_definition()
+
+    # 4. Remove ~/.sidekick/ directory
     if user_dir.exists():
         import shutil as _shutil
         _shutil.rmtree(user_dir, ignore_errors=True)
@@ -304,7 +354,7 @@ def _cmd_uninstall():
     else:
         print(f"\u2713 {user_dir}/ not found (already removed)")
 
-    # 4. Remove uv tool environment
+    # 5. Remove uv tool environment
     uv_cmd = shutil.which("uv")
     if uv_cmd:
         try:

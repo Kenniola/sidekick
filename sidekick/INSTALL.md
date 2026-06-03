@@ -92,6 +92,7 @@ This removes:
 - `~/.sidekick/` — config, cache, session outputs, live alerts
 - MCP server entry from `%APPDATA%/Code/User/mcp.json`
 - sidekick-notify VS Code extension
+- sidekick agent definition from `%APPDATA%/Code/User/prompts/`
 - sidekick-copilot uv tool environment
 
 Add `-y` to skip the confirmation prompt:
@@ -114,6 +115,9 @@ uv tool uninstall sidekick-copilot
 
 # 4. Remove VS Code extension
 code --uninstall-extension sidekick-notify
+
+# 5. Remove agent definition
+Remove-Item "$env:APPDATA\Code\User\prompts\sidekick.agent.md" -Force
 ```
 
 ### Optional: remove shared tools
