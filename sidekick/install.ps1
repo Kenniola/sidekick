@@ -22,20 +22,16 @@ Write-Host ""
 $arch = $env:PROCESSOR_ARCHITECTURE
 $PythonFlag = @()  # extra args for uv tool install
 if ($arch -eq 'ARM64') {
-    if ($Features -in @('azure', 'all')) {
-        Write-Host "[!] Azure Speech SDK does not support Windows ARM64." -ForegroundColor Red
-        Write-Host "    Falling back to 'live' (Whisper via x64 emulation)." -ForegroundColor Yellow
-        $Features = 'live'
-    }
-    if ($Features -in @('live', 'all')) {
-        # Live deps (numpy, PyAudioWPatch, faster-whisper) only ship x64 wheels.
-        # Windows ARM64 runs x64 apps via emulation, so we install with x64 Python.
-        Write-Host "[i] ARM64 detected - installing with x64 Python for live audio support." -ForegroundColor Yellow
+    if ($Features -in @('live', 'azure', 'all')) {
+        # Live/Azure deps only ship x64 wheels. Windows ARM64 runs x64 apps
+        # via emulation, so we install with x64 Python.
+        Write-Host "[i] ARM64 detected - installing with x64 Python for compatibility." -ForegroundColor Yellow
         $PythonFlag = @("--python", "cpython-3.11-windows-x86_64")
     }
-} elseif ($Features -in @('azure', 'all')) {
+}
+if ($Features -in @('azure', 'all')) {
     Write-Host "[i] Azure Speech SDK selected - requires an Azure Speech resource." -ForegroundColor Yellow
-    Write-Host "    Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in ~/.sidekick/customers.yaml" -ForegroundColor Yellow
+    Write-Host "    Set credentials in ~/.sidekick/.env (see INSTALL.md)." -ForegroundColor Yellow
 }
 
 # --- Step 1: Ensure uv is installed ---

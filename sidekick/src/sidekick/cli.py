@@ -126,14 +126,11 @@ def _check_platform():
     import platform
     machine = platform.machine().lower()
     if machine in ("arm64", "aarch64"):
-        print("\u26a0\ufe0f  ARM64 detected — Azure Speech SDK is not supported on this architecture.")
-        print("   Use the Whisper backend (default with [live] extras).")
-        # Check if azure SDK is actually installed
-        try:
-            import azure.cognitiveservices.speech  # noqa: F401
-            print("   azure-cognitiveservices-speech is installed but will fail at runtime on ARM64.")
-        except ImportError:
-            pass
+        # Under x64 Python emulation (our default on ARM64), this block
+        # won't trigger because platform.machine() returns 'amd64'.
+        # It only fires if someone installs with native ARM64 Python.
+        print("\u26a0\ufe0f  ARM64 detected with native ARM64 Python.")
+        print("   Install with x64 Python for full compatibility (the installer does this automatically).")
 
 
 def _check_github_token() -> bool:

@@ -82,7 +82,7 @@ gh auth status                                                     # GitHub toke
 | MCP server not showing in VS Code | Restart VS Code; check `%APPDATA%/Code/User/mcp.json` has a `sidekick` entry |
 | No audio captured | Check system audio is playing through default output device — Sidekick uses loopback capture |
 | `gh auth token` fails | Run `gh auth login` and select HTTPS + browser auth |
-| ARM64 + Azure Speech | Not supported — use Whisper (default). Installer auto-detects and warns |
+| ARM64 + Azure Speech | Fully supported via x64 Python emulation (installer handles this automatically) |
 | Extension not installed | Run manually: `code --install-extension <path-to-vsix>` — path shown in `sidekick init` output |
 
 ---
@@ -139,7 +139,7 @@ The credentials are read from `.env` automatically — no secrets in YAML.
 irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex -Features azure
 ```
 
-> **Note:** Azure Speech SDK does not support Windows ARM64. ARM64 machines should use Whisper (the default).
+> **Note:** On ARM64 Windows, the installer uses x64 Python emulation so all features (including Azure Speech) work.
 
 ---
 

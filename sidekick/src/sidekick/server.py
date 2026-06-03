@@ -595,17 +595,6 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
         from sidekick.transcript.audio_capture import AudioCapture  # noqa: F401
         from sidekick.transcript.speech_recogniser import create_recogniser  # noqa: F401
     except ImportError as e:
-        import platform
-        if platform.machine().upper() in ("ARM64", "AARCH64"):
-            return (
-                "Live audio capture is not available on ARM64 Windows.\n"
-                "PyAudioWPatch and faster-whisper do not ship ARM64 wheels.\n\n"
-                "Tools that work without live audio:\n"
-                "  - research <question>\n"
-                "  - offerings <topic>\n"
-                "  - prototype <description>\n"
-                "  - suggest_questions (from pasted transcript)"
-            )
         return (
             f"Missing live dependencies: {e}\n"
             f"Reinstall with live extras: "
