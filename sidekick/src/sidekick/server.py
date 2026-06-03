@@ -20,7 +20,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np  # noqa: F401 — must be imported at module level to avoid import-lock deadlock with MCP stdio threads
+try:
+    import numpy as np  # noqa: F401 — must be imported at module level to avoid import-lock deadlock with MCP stdio threads
+except ImportError:
+    pass  # optional [live] dependency
 
 try:
     import pyaudiowpatch  # noqa: F401 — same deadlock guard for audio device enumeration
