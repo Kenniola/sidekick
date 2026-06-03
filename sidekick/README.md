@@ -7,7 +7,7 @@ MCP server for GitHub Copilot that listens to meetings, researches questions it 
 ### Option A: One-liner (recommended)
 
 ```powershell
-irm https://raw.githubusercontent.com/Kenniola/sidekick/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex
 ```
 
 Installs `uv` (if missing) → installs sidekick in an isolated environment → scaffolds `~/.sidekick/` → registers MCP server → installs sidekick-notify extension.

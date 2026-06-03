@@ -1,5 +1,5 @@
 # Sidekick — Windows Bootstrap Installer
-# One-liner: irm https://raw.githubusercontent.com/Kenniola/sidekick/main/install.ps1 | iex
+# One-liner: irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex
 #
 # What this does:
 #   1. Installs uv (fast Python package manager) if missing
@@ -84,7 +84,7 @@ if (-not $ghCmd) {
 
 # --- Step 3: Install sidekick via uv tool ---
 # TODO: Replace with actual repo URL or PyPI name when decided
-$RepoUrl = "git+https://github.com/Kenniola/sidekick.git"
+$RepoUrl = "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick"
 
 Write-Host "Installing sidekick-copilot[$Features]..."
 uv tool install "sidekick-copilot[$Features] @ $RepoUrl" --force
