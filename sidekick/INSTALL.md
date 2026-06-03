@@ -114,7 +114,7 @@ uv tool uninstall sidekick-copilot
 #    Delete the "sidekick" key from "servers"
 
 # 4. Remove VS Code extension
-code --uninstall-extension koladimeji.sidekick-notify
+code --uninstall-extension sidekick-copilot.sidekick-notify
 
 # 5. Remove agent definition
 Remove-Item "$env:APPDATA\Code\User\prompts\sidekick.agent.md" -Force

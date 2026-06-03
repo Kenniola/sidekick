@@ -327,7 +327,7 @@ def _cmd_uninstall():
     if code_cmd:
         try:
             result = subprocess.run(
-                [code_cmd, "--uninstall-extension", "koladimeji.sidekick-notify"],
+                [code_cmd, "--uninstall-extension", "sidekick-copilot.sidekick-notify"],
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode == 0:
@@ -336,7 +336,7 @@ def _cmd_uninstall():
                 print("\u2713 sidekick-notify extension not found (already removed)")
         except (subprocess.TimeoutExpired, OSError):
             print("\u26a0\ufe0f  Could not uninstall extension — run manually:")
-            print("   code --uninstall-extension koladimeji.sidekick-notify")
+            print("   code --uninstall-extension sidekick-copilot.sidekick-notify")
     else:
         print("\u26a0\ufe0f  VS Code CLI not found — uninstall extension manually if installed")
 
