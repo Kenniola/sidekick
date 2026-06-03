@@ -95,16 +95,27 @@ By default, Sidekick uses **Whisper** for local speech-to-text (no API keys need
 
 - Go to [Azure Portal → Speech Services](https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices)
 - Choose a region (e.g. `uksouth`) and pricing tier
-- Copy the **key** from the resource's Keys and Endpoint page
 
 ### 2. Add credentials to `~/.sidekick/.env`
 
-Open `%USERPROFILE%\.sidekick\.env` and uncomment the lines:
+Open `%USERPROFILE%\.sidekick\.env` and add your credentials.
+
+**Option A — Key auth** (if local auth is enabled on your resource):
 
 ```env
 AZURE_SPEECH_KEY=your-speech-resource-key
 AZURE_SPEECH_REGION=uksouth
 ```
+
+**Option B — Entra ID auth** (if `disableLocalAuth` is enabled, or for zero-secret setups):
+
+```env
+AZURE_SPEECH_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_SPEECH_REGION=uksouth
+AZURE_SPEECH_RESOURCE_ID=/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<name>
+```
+
+This uses `DefaultAzureCredential` (via `az login`). No keys needed.
 
 > **Never commit this file.** It stays local in your `~/.sidekick/` directory.
 
@@ -120,7 +131,7 @@ myproject:
     backend: azure
 ```
 
-The key and region are read from `.env` automatically — no secrets in YAML.
+The credentials are read from `.env` automatically — no secrets in YAML.
 
 ### 4. Reinstall with Azure extras
 

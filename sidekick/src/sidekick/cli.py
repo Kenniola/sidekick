@@ -76,12 +76,18 @@ def _cmd_init():
     if not env_file.exists():
         env_content = (
             "# Sidekick secrets — loaded automatically at startup.\n"
-            "# This file is gitignored. Never commit secrets.\n"
+            "# This file is local to ~/.sidekick/ and never committed to any repo.\n"
             "\n"
             "# Azure Speech (optional — only needed if speech.backend is 'azure')\n"
+            "#\n"
+            "# Option A — Key auth:\n"
             "# AZURE_SPEECH_KEY=your-speech-resource-key\n"
             "# AZURE_SPEECH_REGION=uksouth\n"
+            "#\n"
+            "# Option B — Entra ID auth (for disableLocalAuth resources):\n"
             "# AZURE_SPEECH_ENDPOINT=https://your-resource.cognitiveservices.azure.com/\n"
+            "# AZURE_SPEECH_REGION=uksouth\n"
+            "# AZURE_SPEECH_RESOURCE_ID=/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<name>\n"
         )
         env_file.write_text(env_content, encoding="utf-8")
         print(f"\u2713 Created {env_file}")
