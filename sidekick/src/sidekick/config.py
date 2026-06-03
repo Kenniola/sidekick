@@ -17,6 +17,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
+
+# Load ~/.sidekick/.env if it exists (secrets, Azure Speech keys, etc.)
+_env_file = Path(os.environ.get("SIDEKICK_HOME", Path.home() / ".sidekick")) / ".env"
+if _env_file.exists():
+    load_dotenv(_env_file, override=False)
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +271,15 @@ def list_available_configs() -> list[str]:
 
 
 def _parse_config(raw: dict) -> SidekickConfig:
-    """Parse a raw YAML dict into a SidekickConfig."""
+    """Parse a raw YAML dict into a SidekickConfig.
+
+    Supports both flat and nested participant keys:
+      consultant: "Your Name"           # flat string
+      consultant: ["Name1", "Name2"]    # flat list
+      participants:                      # nested (legacy)
+        consultant: ["Name"]
+    Flat keys take precedence over nested participants.
+    """
     participants = raw.get("participants", {})
     sensitivity_raw = raw.get("sensitivity", {})
     queue_raw = raw.get("queue", {})
@@ -275,15 +289,35 @@ def _parse_config(raw: dict) -> SidekickConfig:
     output_raw = raw.get("output", {})
     speech_raw = raw.get("speech", {})
 
+    # Resolve consultant names: flat key > nested participants
+    consultant = raw.get("consultant") or participants.get("consultant", [])
+    if isinstance(consultant, str):
+        consultant = [consultant]
+
+    # Resolve client names: flat key > nested participants
+    client = raw.get("client") or participants.get("client", [])
+    if isinstance(client, str):
+        client = [client]
+
     client_topics = [
         TriggerPattern(**t) for t in triggers_raw.get("client_topics", [])
     ]
 
+    # Azure Speech: env vars as fallback for secrets not in YAML
+    azure_key = (
+        speech_raw.get("azure_key", "")
+        or os.environ.get("AZURE_SPEECH_KEY", "")
+    )
+    azure_region = (
+        speech_raw.get("azure_region", "")
+        or os.environ.get("AZURE_SPEECH_REGION", "uksouth")
+    )
+
     return SidekickConfig(
         customer=raw.get("customer", "General"),
         description=raw.get("description", ""),
-        consultant_names=participants.get("consultant", []),
-        client_names=participants.get("client", []),
+        consultant_names=consultant,
+        client_names=client,
         domains=raw.get("domains", ["Microsoft Fabric", "Power BI", "Azure Data Platform"]),
         sensitivity=SensitivityConfig(
             trigger_threshold=sensitivity_raw.get("trigger_threshold", 0.5),
@@ -325,10 +359,12 @@ def _parse_config(raw: dict) -> SidekickConfig:
         ),
         speech=SpeechConfig(
             backend=speech_raw.get("backend", "whisper"),
-            azure_region=speech_raw.get("azure_region", "uksouth"),
-            azure_endpoint=speech_raw.get("azure_endpoint", ""),
-            azure_key=speech_raw.get("azure_key", ""),
-            azure_resource_id=speech_raw.get("azure_resource_id", ""),
+            azure_region=azure_region,
+            azure_endpoint=speech_raw.get("azure_endpoint", "")
+                or os.environ.get("AZURE_SPEECH_ENDPOINT", ""),
+            azure_key=azure_key,
+            azure_resource_id=speech_raw.get("azure_resource_id", "")
+                or os.environ.get("AZURE_SPEECH_RESOURCE_ID", ""),
             language=speech_raw.get("language", "en-GB"),
             speaker_map=speech_raw.get("speaker_map", {}),
         ),

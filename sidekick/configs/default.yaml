@@ -2,11 +2,10 @@
 # Customer configs inherit from this file. Only override what differs.
 
 customer: General
-description: "Default configuration — template for new customers"
+description: "Default configuration - template for new customers"
 
-participants:
-  consultant: []     # Add your name: ["Your Name"]
-  client: ["*"]
+consultant: []               # Add your name: "Your Name" or ["Name1", "Name2"]
+client: ["*"]
 
 domains:
   - Microsoft Fabric
@@ -56,10 +55,9 @@ output:
 
 speech:
   backend: whisper                     # 'whisper' (local, default) or 'azure' (requires Speech resource)
-  # azure_region: uksouth             # uncomment + set for Azure Speech
-  # azure_endpoint: ""                # your *.cognitiveservices.azure.com URL
   language: en-GB
-  # To revert to local Whisper, set backend: whisper
+  # Azure credentials go in ~/.sidekick/.env (not here)
+  # To use Azure Speech: set backend to 'azure' and add AZURE_SPEECH_KEY to .env
 
 rules:
   - Always distinguish GA vs Preview features

@@ -44,7 +44,6 @@ def _cmd_init():
     user_dir.mkdir(parents=True, exist_ok=True)
     (user_dir / "cache").mkdir(exist_ok=True)
     (user_dir / "outputs").mkdir(exist_ok=True)
-    (user_dir / "configs").mkdir(exist_ok=True)
     print(f"\u2713 Created {user_dir}/")
 
     # 1b. Platform checks
@@ -71,6 +70,23 @@ def _cmd_init():
         print(f"\u2713 Created {customers_file}")
     else:
         print(f"\u2713 {customers_file} already exists (kept)")
+
+    # 2b. Create .env file for secrets (if not exists)
+    env_file = user_dir / ".env"
+    if not env_file.exists():
+        env_content = (
+            "# Sidekick secrets — loaded automatically at startup.\n"
+            "# This file is gitignored. Never commit secrets.\n"
+            "\n"
+            "# Azure Speech (optional — only needed if speech.backend is 'azure')\n"
+            "# AZURE_SPEECH_KEY=your-speech-resource-key\n"
+            "# AZURE_SPEECH_REGION=uksouth\n"
+            "# AZURE_SPEECH_ENDPOINT=https://your-resource.cognitiveservices.azure.com/\n"
+        )
+        env_file.write_text(env_content, encoding="utf-8")
+        print(f"\u2713 Created {env_file}")
+    else:
+        print(f"\u2713 {env_file} already exists (kept)")
 
     # 3. Check for GitHub token
     gh_token = _check_github_token()

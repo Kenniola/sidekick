@@ -387,12 +387,10 @@ def create_recogniser(speech_config=None) -> SpeechRecogniser:
     raise RuntimeError(
         "speech.backend is 'azure' but no credentials configured.\n"
         "Set one of:\n"
-        "  1. speech.azure_key in your config YAML (key auth)\n"
-        "  2. speech.azure_endpoint in your config YAML (Entra ID auth via az login)\n"
+        "  1. AZURE_SPEECH_KEY in ~/.sidekick/.env (recommended)\n"
+        "  2. AZURE_SPEECH_ENDPOINT in ~/.sidekick/.env (for Entra ID auth)\n"
         "\n"
-        "Example (add to your configs/<name>.yaml):\n"
-        "  speech:\n"
-        "    backend: azure\n"
-        "    azure_region: uksouth\n"
-        "    azure_endpoint: https://speech-sidekick.cognitiveservices.azure.com/"
+        "Example (~/.sidekick/.env):\n"
+        "  AZURE_SPEECH_KEY=your-key-here\n"
+        "  AZURE_SPEECH_REGION=uksouth"
     )

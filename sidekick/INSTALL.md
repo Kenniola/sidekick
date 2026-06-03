@@ -46,9 +46,8 @@ Open the file `%USERPROFILE%\.sidekick\customers.yaml` in any text editor and ad
 ```yaml
 myproject:
   customer: Acme Corp
+  consultant: Your Name
   description: "Data platform migration"
-  participants:
-    consultant: ["Your Name"]
 ```
 
 ### Step 4 — Use it
@@ -85,6 +84,51 @@ gh auth status                                                     # GitHub toke
 | `gh auth token` fails | Run `gh auth login` and select HTTPS + browser auth |
 | ARM64 + Azure Speech | Not supported — use Whisper (default). Installer auto-detects and warns |
 | Extension not installed | Run manually: `code --install-extension <path-to-vsix>` — path shown in `sidekick init` output |
+
+---
+
+## Azure Speech (optional)
+
+By default, Sidekick uses **Whisper** for local speech-to-text (no API keys needed). To use **Azure Speech** instead (better accuracy, speaker diarization):
+
+### 1. Create an Azure Speech resource
+
+- Go to [Azure Portal → Speech Services](https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices)
+- Choose a region (e.g. `uksouth`) and pricing tier
+- Copy the **key** from the resource's Keys and Endpoint page
+
+### 2. Add credentials to `~/.sidekick/.env`
+
+Open `%USERPROFILE%\.sidekick\.env` and uncomment the lines:
+
+```env
+AZURE_SPEECH_KEY=your-speech-resource-key
+AZURE_SPEECH_REGION=uksouth
+```
+
+> **Never commit this file.** It stays local in your `~/.sidekick/` directory.
+
+### 3. Set the backend in your profile
+
+In `%USERPROFILE%\.sidekick\customers.yaml`:
+
+```yaml
+myproject:
+  customer: Acme Corp
+  consultant: Your Name
+  speech:
+    backend: azure
+```
+
+The key and region are read from `.env` automatically — no secrets in YAML.
+
+### 4. Reinstall with Azure extras
+
+```powershell
+irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex -Features azure
+```
+
+> **Note:** Azure Speech SDK does not support Windows ARM64. ARM64 machines should use Whisper (the default).
 
 ---
 
