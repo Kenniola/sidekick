@@ -16,11 +16,13 @@ sidekick = "sidekick.cli:main"
 
 [project.optional-dependencies]
 live = [
+    "numpy>=1.24.0",
     "faster-whisper>=1.0.0",
     "PyAudioWPatch>=0.2.12",
     "Pillow>=10.0.0",
 ]
 azure = [
+    "numpy>=1.24.0",
     "azure-cognitiveservices-speech>=1.38.0",
     "PyAudioWPatch>=0.2.12",
     "Pillow>=10.0.0",
