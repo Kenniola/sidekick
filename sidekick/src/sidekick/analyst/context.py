@@ -51,6 +51,12 @@ class MeetingContext:
     action_items: list[dict] = field(default_factory=list)
     key_facts: list[str] = field(default_factory=list)
 
+    # Injected context — documents, notes, and image descriptions added live
+    context_documents: list[str] = field(default_factory=list)
+
+    # Auto-detected domains from transcript (supplements config domains)
+    detected_domains: list[str] = field(default_factory=list)
+
     # Phase tracking
     current_phase: str = "opening"  # opening, core, deepdive, wrapup
 

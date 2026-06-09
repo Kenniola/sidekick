@@ -73,7 +73,54 @@ All tiers retry with exponential backoff (1s → 2s → 4s) and fall through the
 ## How It Works
 
 ```
-System Audio → Transcribe (5s) → Batch (10s) → Classify → Priority Queue → Research/Prototype → Log
+@sidekick listen --config hmrc
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  AUDIO CAPTURE                                                     │
+│  WASAPI loopback (Teams/Zoom/Meet) → 5s chunks, 16kHz mono        │
+│                         │                                          │
+│               ┌─────────┴──────────┐                               │
+│               ▼                    ▼                               │
+│      Whisper (local CPU)    Azure Speech (Entra ID)                │
+│      base.en, ~150MB        speaker diarization                    │
+└───────────────┬────────────────────┘                               │
+                │                                                     │
+                ▼                                                     │
+┌─────────────────────────────────────────────────────────────────────┐
+│  CLASSIFICATION  (every 10s batch)                                  │
+│  gpt-4o-mini classifies transcript → ActionItems + thread updates  │
+│  Tracks: conversation threads, meeting phase, key facts, open Qs   │
+└───────────────┬─────────────────────────────────────────────────────┘
+                │ items with priority score ≥ 0.5
+                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  3-LANE PRIORITY QUEUE                                              │
+│  ┌─────────────────┬──────────────────┬──────────────────┐         │
+│  │ Fast (×3)        │ Standard (×2)     │ Deep (×1)       │         │
+│  │ simple lookups  │ multi-source     │ complex reasoning│         │
+│  └────────┬────────┴────────┬─────────┴────────┬─────────┘         │
+│           ▼                 ▼                  ▼                    │
+│    Research Pipeline   Research Pipeline   Prototype Pipeline      │
+│    (MS Learn, repo,    + Eng Hub VBD       Consultant Advisor      │
+│     .github/instr.)      offerings         (7-step reasoning)      │
+└───────────────┬─────────────────────────────────────────────────────┘
+                │
+                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  OUTPUT                                                             │
+│  Session log → alerts.jsonl → sidekick-notify extension             │
+│                                 │                                   │
+│                    ┌────────────┴────────────┐                      │
+│                    ▼                         ▼                      │
+│            Toast (high priority)     Status bar badge               │
+│            Toast (standard)          click → @sidekick status       │
+│                                                                     │
+│  On stop → markdown summary saved to ~/.sidekick/outputs/           │
+└─────────────────────────────────────────────────────────────────────┘
+
+  LLM: GitHub Copilot API (zero cost) → GitHub Models (fallback)
+  Models: gpt-4o-mini │ Claude Sonnet 4.5 │ Claude Opus 4.7
 ```
 
 1. **Captures** system audio via WASAPI loopback (Teams, Zoom, Meet)
@@ -92,8 +139,7 @@ The `research` tool is for manual ad-hoc questions — the loop handles everythi
 | Tool | Shortcut | Purpose |
 |------|----------|---------|
 | `listen` | — | Start audio capture + autonomous loop |
-| `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, offerings |
-| `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, Eng Hub) |
+| `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, offerings || `add_context` | — | Inject live context — notes, files, or images (base64 → vision LLM) || `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, Eng Hub) |
 | `offerings` | `o` | VBD/IP offerings from Eng Hub (PoC, ADR, WorkshopPLUS) |
 | `prototype` | `p <desc>` | Generate code (PySpark, T-SQL, DAX, pipeline) |
 | `status` | `s` / `.` | New threads and research since last check |
@@ -211,7 +257,18 @@ sidekick list-configs  # Show available profiles
 └──────────────────────────────────────────────────────────┘
 ```
 
-Research searches: workspace docs (keyword scoring) → `.github/instructions/` → Microsoft Learn.
+Research searches: workspace docs (keyword + content scoring) → `.github/instructions/` (content-aware) → Microsoft Learn (filtered, top-5 from 8 fetched).
+
+### v0.2.0 Optimisations
+
+- **Domain auto-detection** — LLM analyses first 30 transcript lines at batch 3 to detect domains; merges with config and invalidates grounding cache
+- **Parallel I/O** — `suggest_questions` runs Eng Hub + grounding context via `asyncio.gather()` with shared httpx clients (no per-call client creation)
+- **`add_context` tool** — inject notes, files (.md/.txt/.py/.json, 4KB cap), or images (base64 → vision LLM extraction, 10MB cap) mid-session
+- **Smart dedup** — priority queue checks new questions against last 10 completed outputs via fast-tier LLM; duplicates are re-researched with enriched context (previous answer appended) rather than skipped
+- **Better web search** — fetches 8 MS Learn results, filters via URL depth and rejects training/certification pages, returns top 5
+- **Dynamic prompts** — hardcoded "Microsoft Fabric" replaced with detected domains across classifier, research synthesis, and advisor prompts
+- **Thread detection** — explicit rules in analyst prompt for topic-shift detection; classifier prompt enriched with injected context documents
+- **Grounding cache** — 5-minute TTL cache on `_build_grounding_context()` via `asyncio.to_thread()`
 
 ### Resilience
 
@@ -234,7 +291,7 @@ repo/sidekick/
 │   ├── default.yaml            # Factory defaults
 │   └── _template.yaml          # Starter template for customers.yaml
 └── src/sidekick/
-    ├── server.py               # MCP server — 7 tools + background loop + capture + notifications
+    ├── server.py               # MCP server — 8 tools + background loop + capture + notifications
     ├── llm.py                  # Multi-backend LLM client + vision API (GitHub/Azure/Anthropic)
     ├── config.py               # Config loader — user-local + package defaults
     ├── cli.py                  # CLI entry points (init, serve, list-configs)

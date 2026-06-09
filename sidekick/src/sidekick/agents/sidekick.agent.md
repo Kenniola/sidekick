@@ -40,7 +40,7 @@ System Audio → Transcribe (Whisper/Azure) → LLM Classifier → Priority Queu
 The background loop handles that automatically. The `research` tool exists for
 *ad-hoc manual questions* the architect wants to look up on top of what the loop found.
 
-## Seven Tools — When to Call Each
+## Eight Tools — When to Call Each
 
 ### `listen` — Start the session
 - **Call when**: user says "listen", "start listening", "join the call", or similar
@@ -66,6 +66,10 @@ The background loop handles that automatically. The `research` tool exists for
   contradictions, identifies gaps, matches relevant VBD/IP offerings from Eng Hub,
   and recommends high-impact questions grounded in team standards and past
   engagement artifacts.
+- **Domain-aware**: Prompts adapt to auto-detected domains from the transcript (e.g.
+  Microsoft Fabric, PostgreSQL, AWS) — no hardcoded technology assumptions.
+- **Parallel I/O**: Eng Hub search and grounding context load concurrently via
+  `asyncio.gather()` for faster response.
 - **Requires**: An active `listen` session with at least a few transcript exchanges
 - **Returns**: A synthesis of the meeting so far, then ranked questions with:
   - Category (clarify / probe / challenge / scope / stakeholder / risk / next_step)
@@ -85,7 +89,10 @@ The background loop handles that automatically. The `research` tool exists for
 - **Call when**: user explicitly asks a technical question (e.g. "can Fabric connect
   to S3 in a VPC?", "what's the DirectLake row limit?")
 - **What it does**: Runs the research pipeline on-demand against MS Learn, workspace
-  docs, instruction files, and Eng Hub offerings.
+  docs, instruction files, and Eng Hub offerings. Fetches 8 results from MS Learn,
+  filters out shallow/training/certification URLs, and returns top 5.
+- **Domain-aware**: Synthesis prompt adapts to detected domains rather than assuming
+  a fixed technology stack.
 - **Parameters**: `question` (required), `depth` (`quick` / `medium` / `deep`)
 - **Returns**: Sourced answer with references
 - **Note**: This is for MANUAL questions only. Questions detected in the live
@@ -113,6 +120,22 @@ The background loop handles that automatically. The `research` tool exists for
 - **Parameters**: `description` (required), `type` (`notebook` / `sql` / `dax` /
   `pipeline`), `columns` (optional comma-separated list)
 - **Returns**: Ready-to-use code block
+
+### `add_context` — Inject live context
+- **Call when**: user shares a file, pastes notes, or wants to add context to the
+  session (e.g. "here's the architecture diagram", "add this to context",
+  "consider this document")
+- **What it does**: Adds text, file content, or image descriptions to the live
+  session context. Text is appended directly. Files (.md, .txt, .py, .json, .yaml,
+  .yml, .sql, .csv, .xml) are read and capped at 4KB. Images (.png, .jpg, .jpeg,
+  .gif, .webp, .bmp) are base64-encoded and sent to the vision LLM for content
+  extraction (10MB cap).
+- **Parameters**: `content` (text), `file_path` (path to file), `image_path` (path
+  to image) — provide at least one
+- **Returns**: Confirmation of what was added
+- **Effect**: Injected context appears in classifier prompts (last 3 documents,
+  200 chars each) and grounding context (last 5 documents, 1500 chars each),
+  improving question detection and research relevance for the remainder of the session.
 
 ### `status` — Check for updates
 - **Call when**: user says "any updates?", "status", "what have you found?",

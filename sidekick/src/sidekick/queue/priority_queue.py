@@ -96,12 +96,31 @@ class PriorityQueue:
         self.config = config
 
     async def enqueue(self, item: ActionItem) -> None:
-        """Add an action item to the appropriate lane."""
-        # Check for merge candidates
+        """Add an action item to the appropriate lane.
+
+        Checks for:
+        1. Merge candidates in pending/running queue items
+        2. Semantic duplicates against recently completed outputs
+           (enriches with new context instead of skipping)
+        """
+        # Check for merge candidates in queue
         existing = self._find_merge_candidate(item)
         if existing:
             existing.merge_with(item)
             return
+
+        # Check for semantic duplicates against completed outputs
+        duplicate_of = await self._find_completed_duplicate(item)
+        if duplicate_of:
+            # Mark as a context-enrichment re-research
+            item.question = (
+                f"[ENRICHED] {item.question} "
+                f"(previous answer: {duplicate_of.answer[:200]})"
+            )
+            logger.info(
+                "Duplicate detected, enriching with new context: %s",
+                item.question[:60],
+            )
 
         lane = self._route(item)
         await lane.submit(item)
@@ -129,6 +148,50 @@ class PriorityQueue:
                         or item.related_to == queued.id
                     ):
                         return queued
+        return None
+
+    async def _find_completed_duplicate(self, item: ActionItem) -> ActionResult | None:
+        """Check if this question is semantically similar to a recent completed output.
+
+        Uses a fast-tier LLM call to compare the new question against the last
+        10 completed outputs. Returns the matching ActionResult if >80% overlap,
+        or None if it's a genuinely new question.
+        """
+        if not self.completed:
+            return None
+
+        # Only check last 10 completed items
+        recent = self.completed[-10:]
+        recent_questions = "\n".join(
+            f"  {i+1}. {r.question[:100]}" for i, r in enumerate(recent)
+        )
+
+        try:
+            from sidekick.llm import call_llm
+            result = await call_llm(
+                system_prompt=(
+                    "You compare a NEW question against a list of PREVIOUS questions "
+                    "to detect semantic duplicates. Return JSON with a single key "
+                    '"match_index" — the 1-based index of the most similar previous '
+                    "question if they ask essentially the same thing (>80% overlap), "
+                    "or 0 if the new question is genuinely different."
+                ),
+                user_prompt=(
+                    f"NEW: {item.question[:150]}\n\n"
+                    f"PREVIOUS:\n{recent_questions}"
+                ),
+                json_output=True,
+                tier="fast",
+                timeout=5,
+            )
+            import json
+            data = json.loads(result.strip().strip("`").lstrip("json\n"))
+            match_idx = data.get("match_index", 0)
+            if isinstance(match_idx, int) and 1 <= match_idx <= len(recent):
+                return recent[match_idx - 1]
+        except Exception as e:
+            logger.debug("Dedup check failed: %s", e)
+
         return None
 
     async def process_ready(

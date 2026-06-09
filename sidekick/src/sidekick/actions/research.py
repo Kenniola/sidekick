@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 _enghub = EngHubPipeline()
 
-SYNTHESIS_SYSTEM_PROMPT = """You are a Microsoft Fabric technical research assistant \
+SYNTHESIS_SYSTEM_PROMPT = """You are a {domain_scope} technical research assistant \
 embedded in a live customer engagement. Your answers are read aloud by the \
 consultant on the call, so they must be specific, actionable, and anchored to \
 the customer's actual situation.
@@ -179,8 +179,12 @@ Research this question and provide a concise, sourced answer. \
 Anchor your response to the customer's specific context where possible. \
 Cite the URLs from web results where they support your answer."""
 
+        # Scope the system prompt to actual domains being discussed
+        domain_scope = ", ".join(domains) if domains else "Microsoft Fabric"
+        system_prompt = SYNTHESIS_SYSTEM_PROMPT.format(domain_scope=domain_scope)
+
         answer = await call_llm(
-            system_prompt=SYNTHESIS_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             tier=tier,
         )
@@ -288,15 +292,32 @@ Cite the URLs from web results where they support your answer."""
         if not instructions_dir.exists():
             return "(no instruction files found)"
 
-        relevant = []
-        keywords = question.lower().split()
-        for f in instructions_dir.glob("*.instructions.md"):
-            name = f.stem.lower()
-            if any(kw in name for kw in keywords):
-                content = f.read_text(encoding="utf-8")[:500]
-                relevant.append(f"--- {f.name} ---\n{content}")
+        keywords = [w.lower() for w in question.split() if len(w) > 3]
+        if not keywords:
+            return "(no search terms)"
 
-        return "\n\n".join(relevant) if relevant else "(no matching instructions)"
+        scored: list[tuple[int, str]] = []
+        for f in instructions_dir.glob("*.instructions.md"):
+            try:
+                content = f.read_text(encoding="utf-8")
+                name_lower = f.stem.lower()
+                preview = content[:1500].lower()
+
+                # Score by keyword hits in both filename and content
+                score = sum(
+                    2 if kw in name_lower else (1 if kw in preview else 0)
+                    for kw in keywords
+                )
+                if score > 0:
+                    scored.append((score, f"--- {f.name} ---\n{content[:500]}"))
+            except Exception:
+                continue
+
+        if not scored:
+            return "(no matching instructions)"
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return "\n\n".join(text for _, text in scored[:3])
 
     def _format_meeting_context(self, context) -> str:
         if not context:
@@ -353,7 +374,7 @@ Cite the URLs from web results where they support your answer."""
         params = {
             "search": question,
             "locale": "en-us",
-            "$top": "5",
+            "$top": "8",
         }
         results = []
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -361,14 +382,33 @@ Cite the URLs from web results where they support your answer."""
             resp.raise_for_status()
             data = resp.json()
 
-            for item in data.get("results", [])[:5]:
+            for item in data.get("results", [])[:8]:
                 title = item.get("title", "")
                 snippet = str(item.get("description", ""))[:200]
                 link = item.get("url", "")
-                if title and link:
+                if title and link and self._is_useful_url(link):
                     results.append(f"[MS Learn] {title}\n  URL: {link}\n  {snippet}")
 
-        return results
+        return results[:5]
+
+    @staticmethod
+    def _is_useful_url(url: str) -> bool:
+        """Filter out broad landing pages and certification guides."""
+        # Reject root-level landing pages with very short paths
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        path_segments = [s for s in path.split("/") if s]
+        # Reject if path has fewer than 3 segments (e.g. /en-us/fabric/)
+        if len(path_segments) < 3:
+            return False
+        # Reject certification/training pages
+        reject_patterns = [
+            "/training/", "/certifications/", "/credentials/",
+            "/learn/paths/", "/study-guide",
+        ]
+        path_lower = path.lower()
+        return not any(p in path_lower for p in reject_patterns)
 
     async def _search_bing(self, question: str, api_key: str) -> list[str]:
         """Search verified domains via Bing Web Search API v7.

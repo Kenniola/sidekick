@@ -1,10 +1,10 @@
 """Sidekick MCP server — real-time meeting co-pilot.
 
-Seven tools, focused on live consulting value:
+Eight tools, focused on live consulting value:
 
   listen            — capture system audio and transcribe in real-time
   suggest_questions — synthesise the meeting and recommend what to ask
-  research          — answer a question instantly
+  add_context       — inject live context (notes, docs, diagrams)\n  research          — answer a question instantly
   offerings         — surface VBD/IP offerings from Eng Hub
   prototype         — generate working code on the fly
   status            — show what Sidekick has found so far
@@ -77,6 +77,15 @@ _offerings_searched_topics: set[str] = set()
 _research: ResearchPipeline | None = None
 _prototype: PrototypePipeline | None = None
 
+# Domain auto-detection — runs after first 3 classifier batches
+_classify_batch_count: int = 0
+_domains_detected: bool = False
+
+# Grounding context cache — avoids re-reading files on every suggest_questions call
+_grounding_cache: str | None = None
+_grounding_cache_time: float = 0.0
+_GROUNDING_CACHE_TTL = 300.0  # 5 minutes
+
 
 # ---------------------------------------------------------------------------
 # Internals
@@ -89,11 +98,18 @@ def _init_session(config_name: str = "default"):
     global _research, _prototype, _last_error
     global _last_surface_output_count, _last_surface_thread_count
     global _offerings_searched_topics
+    global _grounding_cache, _grounding_cache_time
 
     _last_error = None
     _last_surface_output_count = 0
     _last_surface_thread_count = 0
     _offerings_searched_topics = set()
+    _grounding_cache = None
+    _grounding_cache_time = 0.0
+
+    global _classify_batch_count, _domains_detected
+    _classify_batch_count = 0
+    _domains_detected = False
 
     _config = load_config(config_name)
     _context = MeetingContext(customer_name=_config.customer)
@@ -265,9 +281,74 @@ async def _run_listen_loop():
             logger.info("Speech recogniser closed after listen loop exit.")
 
 
+async def _detect_domains() -> None:
+    """Auto-detect domains from transcript after enough context accumulates.
+
+    Runs a fast-tier LLM call on the first ~30 transcript lines to identify
+    which technology domains are being discussed. Detected domains supplement
+    (not replace) the configured domains from customers.yaml.
+    """
+    global _domains_detected
+    if _domains_detected or not _context or not _config:
+        return
+
+    transcript_sample = _context.full_transcript[-30:]
+    if len(transcript_sample) < 10:
+        return
+
+    from sidekick.llm import call_llm
+    sample_text = "\n".join(
+        f"{getattr(l, 'speaker', '?')}: {getattr(l, 'text', str(l))}"
+        for l in transcript_sample
+    )
+
+    try:
+        result = await call_llm(
+            system_prompt=(
+                "You analyse meeting transcripts to detect technology domains "
+                "being discussed. Return a JSON object with a single key "
+                "\"domains\" containing a list of 3-8 domain strings. "
+                "Examples: \"Microsoft Fabric\", \"Power BI\", \"Dynamics 365\", "
+                "\"Azure APIM\", \"Azure Service Bus\", \"Oracle\", \"PostgreSQL\", "
+                "\"AWS S3\", \"Databricks\", \"Legacy Systems\", \"Cosmos DB\". "
+                "Only include domains clearly mentioned or implied."
+            ),
+            user_prompt=f"Transcript sample:\n{sample_text}",
+            json_output=True,
+            tier="fast",
+            timeout=8,
+        )
+        import json
+        data = json.loads(result.strip().strip("`").lstrip("json\n"))
+        detected = data.get("domains", [])
+        if detected:
+            # Merge with configured domains (no duplicates)
+            existing = {d.lower() for d in _config.domains}
+            new_domains = [d for d in detected if d.lower() not in existing]
+            if new_domains:
+                _config.domains.extend(new_domains)
+                _context.detected_domains = new_domains
+                logger.info("Auto-detected domains: %s", new_domains)
+                # Invalidate grounding cache since domains changed
+                global _grounding_cache
+                _grounding_cache = None
+    except Exception as e:
+        logger.debug("Domain detection failed: %s", e)
+
+    _domains_detected = True
+
+
 async def _classify_and_dispatch(lines: list, consecutive_errors: int) -> None:
     """Send accumulated transcript lines to the classifier and dispatch results."""
+    global _classify_batch_count
+    _classify_batch_count += 1
+
     action_items = await _analyst.analyse_chunk(lines)
+
+    # Auto-detect domains after 3 batches (enough transcript context)
+    if _classify_batch_count == 3 and not _domains_detected:
+        await _detect_domains()
+
     for item in action_items:
         await _queue.enqueue(item)
     results = await _queue.process_ready(
@@ -452,6 +533,9 @@ def _build_grounding_context() -> str:
 
     Loads team standards from .github/instructions/ and recent engagement
     artifacts from configured repo paths to give the advisor deep context.
+
+    This is synchronous file I/O — callers should wrap with asyncio.to_thread()
+    to avoid blocking the event loop.
     """
     if not _config:
         return "(no config loaded)"
@@ -546,7 +630,25 @@ def _build_grounding_context() -> str:
             except Exception:
                 continue
 
+    # 4. Injected live context (from add_context tool)
+    if _context and _context.context_documents:
+        for i, doc in enumerate(_context.context_documents[-5:], 1):
+            parts.append(f"--- Live context #{i} ---\n{doc[:1500]}")
+
     return "\n\n".join(parts) if parts else "(no grounding context available)"
+
+
+async def _get_grounding_context_async() -> str:
+    """Get grounding context, using cache if fresh, else rebuild in a thread."""
+    global _grounding_cache, _grounding_cache_time
+
+    if _grounding_cache and (time.time() - _grounding_cache_time) < _GROUNDING_CACHE_TTL:
+        return _grounding_cache
+
+    result = await asyncio.to_thread(_build_grounding_context)
+    _grounding_cache = result
+    _grounding_cache_time = time.time()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -702,35 +804,43 @@ async def suggest_questions() -> str:
             research_parts.append(f"[{o['action_type']}] {o['question']}: {o['answer'][:150]}")
         research_block = "\n".join(research_parts)
 
-    # Offerings — search Eng Hub for relevant VBD/IP offerings
-    offerings_block = "(no offerings matched)"
-    try:
-        # Extract topics from structured threads (preferred) or key_facts
-        thread_topics = [
-            t.topic for t in _context.threads.values()
-            if t.status == "open"
-        ] if _context.threads else []
+    # Parallel fetch: EngHub offerings + grounding context
+    # Both are independent I/O operations — run concurrently to halve latency.
+    async def _fetch_offerings() -> str:
+        try:
+            thread_topics = [
+                t.topic for t in _context.threads.values()
+                if t.status == "open"
+            ] if _context.threads else []
 
-        if thread_topics:
-            topic_str = ", ".join(thread_topics[-5:])
-        else:
-            topic_str = " ".join(_context.key_facts[-5:]) if _context.key_facts else ""
+            if thread_topics:
+                topic_str = ", ".join(thread_topics[-5:])
+            else:
+                topic_str = " ".join(_context.key_facts[-5:]) if _context.key_facts else ""
 
-        if topic_str:
-            config = _config or load_config("default")
-            eh_result = await _enghub_pipeline.search(topic_str, domains=config.domains)
-            if eh_result and eh_result.offerings:
-                parts = []
-                for o in eh_result.offerings[:5]:
-                    parts.append(f"- [{o.offering_type}] {o.title}: {o.description[:120]}")
-                    if o.url:
-                        parts.append(f"  URL: {o.url}")
-                offerings_block = "\n".join(parts)
-    except Exception:
-        logger.debug("Eng Hub search in suggest_questions failed", exc_info=True)
+            if topic_str:
+                config = _config or load_config("default")
+                eh_result = await asyncio.wait_for(
+                    _enghub_pipeline.search(topic_str, domains=config.domains),
+                    timeout=10.0,
+                )
+                if eh_result and eh_result.offerings:
+                    parts = []
+                    for o in eh_result.offerings[:5]:
+                        parts.append(f"- [{o.offering_type}] {o.title}: {o.description[:120]}")
+                        if o.url:
+                            parts.append(f"  URL: {o.url}")
+                    return "\n".join(parts)
+        except asyncio.TimeoutError:
+            logger.debug("Eng Hub search timed out (10s cap)")
+        except Exception:
+            logger.debug("Eng Hub search in suggest_questions failed", exc_info=True)
+        return "(no offerings matched)"
 
-    # Grounding — team standards + past engagement artifacts
-    grounding_block = _build_grounding_context()
+    offerings_block, grounding_block = await asyncio.gather(
+        _fetch_offerings(),
+        _get_grounding_context_async(),
+    )
 
     prompt = CONSULTANT_ADVISOR_PROMPT.format(
         context_block=context_block,
@@ -746,7 +856,7 @@ async def suggest_questions() -> str:
         response_text = await call_llm(
             system_prompt=(
                 "You are a senior consulting advisor with deep expertise in "
-                "Microsoft Fabric, data platforms, and cloud architecture. "
+                f"{', '.join(_config.domains)}. "
                 "Think carefully through the reasoning chain before generating "
                 "questions. Return JSON only."
             ),
@@ -810,7 +920,118 @@ async def suggest_questions() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 3: research — instant answers
+# Tool 3: add_context — inject live context
+# ---------------------------------------------------------------------------
+
+
+@server.tool()
+async def add_context(
+    content: str = "",
+    file_path: str = "",
+    image_path: str = "",
+) -> str:
+    """Inject live context into the meeting session (notes, docs, diagrams).
+
+    Use during a call to feed Sidekick additional information it can't hear,
+    such as architecture diagrams shown on screen, document links, or
+    decisions made in chat.
+
+    Args:
+        content: Free-text context (paste notes, architecture decisions, etc.)
+        file_path: Path to a document to ingest (md, txt, json, yaml)
+        image_path: Path to a screenshot or diagram image (png, jpg) —
+                    processed via vision LLM to extract a text description.
+    """
+    if not _context:
+        return "No active session. Start with: listen"
+
+    if not content and not file_path and not image_path:
+        return (
+            "Provide at least one input:\n"
+            "  content=\"your notes here\"\n"
+            "  file_path=\"path/to/doc.md\"\n"
+            "  image_path=\"path/to/diagram.png\""
+        )
+
+    added: list[str] = []
+
+    # 1. Free-text content
+    if content:
+        _context.context_documents.append(content)
+        added.append(f"Text note ({len(content)} chars)")
+
+    # 2. File content
+    if file_path:
+        from pathlib import Path as _Path
+        fp = _Path(file_path)
+        if not fp.exists():
+            return f"File not found: {file_path}"
+        allowed = {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".sql"}
+        if fp.suffix.lower() not in allowed:
+            return f"Unsupported file type: {fp.suffix}. Supported: {', '.join(sorted(allowed))}"
+        try:
+            text = fp.read_text(encoding="utf-8")
+            # Cap at 4000 chars to stay within context limits
+            if len(text) > 4000:
+                text = text[:4000] + "\n... (truncated)"
+            _context.context_documents.append(f"--- {fp.name} ---\n{text}")
+            added.append(f"File: {fp.name} ({len(text)} chars)")
+        except Exception as e:
+            return f"Error reading {fp.name}: {e}"
+
+    # 3. Image — extract description via vision LLM
+    if image_path:
+        import base64
+        from pathlib import Path as _Path
+        from sidekick.llm import call_llm_vision
+
+        ip = _Path(image_path)
+        if not ip.exists():
+            return f"Image not found: {image_path}"
+        allowed_img = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+        if ip.suffix.lower() not in allowed_img:
+            return f"Unsupported image type: {ip.suffix}. Supported: {', '.join(sorted(allowed_img))}"
+        try:
+            image_bytes = ip.read_bytes()
+            # Cap at 10MB
+            if len(image_bytes) > 10 * 1024 * 1024:
+                return f"Image too large ({len(image_bytes) // 1024 // 1024}MB). Max 10MB."
+            image_b64 = base64.b64encode(image_bytes).decode()
+
+            description = await call_llm_vision(
+                system_prompt=(
+                    "You are a technical diagram analyst. Describe this image "
+                    "precisely, extracting: components, data flows, technologies, "
+                    "integration points, labels, and any text visible. "
+                    "Be specific — mention product names, service names, and "
+                    "connection types exactly as shown."
+                ),
+                user_prompt=(
+                    "Describe this architecture diagram or screenshot from a "
+                    "customer meeting. Extract all technical details."
+                ),
+                image_b64=image_b64,
+                timeout=30.0,
+            )
+
+            _context.context_documents.append(
+                f"--- Image: {ip.name} ---\n{description}"
+            )
+            added.append(f"Image: {ip.name} (extracted {len(description)} chars)")
+        except Exception as e:
+            return f"Error processing image {ip.name}: {e}"
+
+    summary = ", ".join(added)
+    total = len(_context.context_documents)
+    return (
+        _get_unseen_findings()
+        + f"Context added: {summary}\n"
+        + f"Total context documents: {total}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool 4: research — instant answers
 # ---------------------------------------------------------------------------
 
 
@@ -835,7 +1056,7 @@ async def research(question: str, depth: str = "medium") -> str:
     return _get_unseen_findings() + result.format()
 
 # ---------------------------------------------------------------------------
-# Tool 4: offerings — surface VBD/IP from Eng Hub
+# Tool 5: offerings — surface VBD/IP from Eng Hub
 # ---------------------------------------------------------------------------
 
 
@@ -871,7 +1092,7 @@ async def offerings(topic: str = "") -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 5: prototype â€” generate code on the fly
+# Tool 6: prototype â€” generate code on the fly
 # ---------------------------------------------------------------------------
 
 
@@ -901,7 +1122,7 @@ async def prototype(
 
 
 # ---------------------------------------------------------------------------
-# Tool 6: status â€” what has Sidekick found so far?
+# Tool 7: status â€” what has Sidekick found so far?
 # ---------------------------------------------------------------------------
 
 
@@ -969,7 +1190,7 @@ async def status() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 7: stop â€” end session with summary
+# Tool 8: stop â€” end session with summary
 # ---------------------------------------------------------------------------
 
 

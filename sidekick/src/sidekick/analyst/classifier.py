@@ -155,6 +155,17 @@ class TranscriptAnalyst:
             f"- {t.pattern} → {t.action} ({t.grounding})"
             for t in self.config.triggers.client_topics
         )
+
+        # Include injected context summaries if available
+        injected_context = ""
+        if self.context.context_documents:
+            recent_docs = self.context.context_documents[-3:]
+            summaries = []
+            for doc in recent_docs:
+                # First 200 chars of each document
+                summaries.append(doc[:200])
+            injected_context = "\nINJECTED CONTEXT (from add_context):\n" + "\n---\n".join(summaries)
+
         return f"""MEETING STATE:
 Customer: {self.context.customer_name}
 Duration so far: {self.context.elapsed_minutes:.0f} minutes
@@ -174,7 +185,7 @@ ANSWERED QUESTIONS:
 {self.context.format_answered_questions()}
 
 RECENT CONVERSATION BUFFER (last ~3 minutes):
-{self.context.format_recent_buffer()}
+{self.context.format_recent_buffer()}{injected_context}
 
 NEW TRANSCRIPT CHUNK (last {self.config.sensitivity.analyst_interval_seconds}s):
 {chunk_text}

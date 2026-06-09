@@ -114,6 +114,36 @@ async def _get_gh_token() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared HTTP clients — reused across calls to avoid per-request TLS overhead
+# ---------------------------------------------------------------------------
+
+_copilot_client: httpx.AsyncClient | None = None
+_github_models_client: httpx.AsyncClient | None = None
+
+
+def _get_copilot_client(timeout: float) -> httpx.AsyncClient:
+    """Return a shared httpx client for the Copilot API."""
+    global _copilot_client
+    if _copilot_client is None or _copilot_client.is_closed:
+        _copilot_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _copilot_client
+
+
+def _get_github_models_client(timeout: float) -> httpx.AsyncClient:
+    """Return a shared httpx client for the GitHub Models API."""
+    global _github_models_client
+    if _github_models_client is None or _github_models_client.is_closed:
+        _github_models_client = httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+    return _github_models_client
+
+
+# ---------------------------------------------------------------------------
 # Backend implementations
 # ---------------------------------------------------------------------------
 
@@ -138,18 +168,19 @@ async def _call_copilot(
     if json_output:
         body["response_format"] = {"type": "json_object"}
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            _COPILOT_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-                "Copilot-Integration-Id": "vscode-chat",
-            },
-            json=body,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    client = _get_copilot_client(timeout)
+    resp = await client.post(
+        _COPILOT_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Copilot-Integration-Id": "vscode-chat",
+        },
+        json=body,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 async def _call_github_models(
@@ -172,17 +203,18 @@ async def _call_github_models(
     if json_output:
         body["response_format"] = {"type": "json_object"}
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.post(
-            _GITHUB_MODELS_URL,
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    client = _get_github_models_client(timeout)
+    resp = await client.post(
+        _GITHUB_MODELS_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 _PROVIDERS = {
