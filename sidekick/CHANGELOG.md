@@ -37,7 +37,7 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Added
 
-- **`add_context` tool** — inject text, files (.md/.txt/.py/.json/.yaml/.sql/.csv/.xml, 4KB cap), or images (.png/.jpg/.gif/.webp/.bmp, 10MB cap via vision LLM) into the live session. Injected context appears in classifier prompts (last 3 docs, 200 chars each) and grounding context (last 5 docs, 1500 chars each).
+- **`add_context` tool** — inject text, files (.md/.txt/.json/.yaml/.yml/.csv/.sql, 4000-char cap), or images (.png/.jpg/.jpeg/.gif/.webp, 10MB cap via vision LLM) into the live session. Injected context appears in classifier prompts (last 3 docs, 200 chars each) and grounding context (last 5 docs, 1500 chars each).
 - **Domain auto-detection** — fast-tier LLM analyses first 30 transcript lines at classifier batch 3 to detect technology domains. Detected domains merge with config-specified domains and invalidate the grounding cache.
 - **Thread detection rules** — explicit `THREAD DETECTION RULES` section in the analyst system prompt guides topic-shift detection, granular thread creation, and thread lifecycle management.
 - **Semantic dedup in priority queue** — `_find_completed_duplicate()` compares new questions against last 10 completed outputs via fast-tier LLM. Duplicates are re-researched with enriched context (previous answer appended) rather than skipped.

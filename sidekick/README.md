@@ -139,7 +139,9 @@ The `research` tool is for manual ad-hoc questions — the loop handles everythi
 | Tool | Shortcut | Purpose |
 |------|----------|---------|
 | `listen` | — | Start audio capture + autonomous loop |
-| `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, offerings || `add_context` | — | Inject live context — notes, files, or images (base64 → vision LLM) || `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, Eng Hub) |
+| `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, offerings |
+| `add_context` | — | Inject live context — notes, files, or images (vision LLM) |
+| `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, Eng Hub) |
 | `offerings` | `o` | VBD/IP offerings from Eng Hub (PoC, ADR, WorkshopPLUS) |
 | `prototype` | `p <desc>` | Generate code (PySpark, T-SQL, DAX, pipeline) |
 | `status` | `s` / `.` | New threads and research since last check |
@@ -150,6 +152,29 @@ The `research` tool is for manual ad-hoc questions — the loop handles everythi
 7-step chain-of-thought: claim analysis → contradiction detection → gap analysis → risk detection → offerings match → strategic positioning → timing assessment.
 
 Returns ranked questions with category, impact, rationale, corrections, observations, and matched VBD/IP offerings. Phase-aware (opening → core → deep-dive → wrap-up). Grounded in `.github/instructions/` and past engagement artifacts.
+
+### `add_context` — Live Context Injection
+
+Feed Sidekick information it can't hear: architecture diagrams shown on screen, decisions made in chat, links shared off-mic.
+
+```text
+add_context content="Customer is migrating Oracle → Azure SQL, 6-month timeline."
+add_context file_path="C:/work/customer-architecture.md"
+add_context image_path="C:/work/screenshot.png"
+```
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `content` | text | Free-text notes pasted into the session. |
+| `file_path` | path | `.md` `.txt` `.json` `.yaml` `.yml` `.csv` `.sql` — capped at 4000 chars (truncated with marker). |
+| `image_path` | path | `.png` `.jpg` `.jpeg` `.gif` `.webp` — capped at 10 MB; processed via vision LLM (gpt-4o) which extracts components, data flows, technologies, integration points, and visible text. |
+
+At least one input is required; all three can be combined in one call. Injected documents are stored on the active session and surface in:
+
+- **Classifier prompts** — last 3 documents, 200 chars each (helps the analyst recognise topics it never heard spoken aloud).
+- **Grounding context** — last 5 documents, 1500 chars each (used by `suggest_questions`, `research`, and `prototype`).
+
+Response echoes a one-line summary plus the running `Total context documents` count.
 
 ---
 
