@@ -444,12 +444,15 @@ def _notify(result) -> None:
     The user sees findings via the auto-surface preamble on their next
     tool call — no sound alert needed.
     """
-    # 1. Audible alert (Windows only — 1kHz tone, 300ms)
+    # 1. Audible alert (Windows only — standard notification chime,
+    # respects Windows notification volume in Sound Settings)
     try:
         import sys
         if sys.platform == "win32":
             import winsound
-            winsound.Beep(1000, 300)
+            # MB_OK = default "system notification" sound (subtle).
+            # Falls back to a short Beep if the sound scheme has no asset.
+            winsound.MessageBeep(winsound.MB_OK)
     except Exception:
         pass  # Not on Windows or no sound device — skip silently
 

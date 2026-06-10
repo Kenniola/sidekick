@@ -205,7 +205,7 @@ Lists replace wholesale (not merged). Run `sidekick init` to scaffold with a com
 ## Notifications
 
 ### Built-in
-Findings trigger a 1kHz beep (Windows) and append to `~/.sidekick/live/alerts.jsonl`. Every tool response auto-surfaces new findings via a preamble banner.
+Findings trigger the Windows default notification chime (`winsound.MessageBeep`, respects **Notification volume** in Sound Settings) and append to `~/.sidekick/live/alerts.jsonl`. Every tool response auto-surfaces new findings via a preamble banner.
 
 ### VS Code Extension (sidekick-notify)
 Optional companion extension in `repo/sidekick-notify/` — polls `alerts.jsonl` and shows VS Code toast notifications with a status bar badge.
