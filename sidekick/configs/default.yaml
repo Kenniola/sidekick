@@ -53,6 +53,16 @@ output:
   auto_save: true
   include_session_summary: true
 
+notifications:
+  # Sound played when a finding is surfaced. Windows only — silently
+  # no-ops on macOS/Linux. Options:
+  #   silent       — no sound
+  #   chime        — standard Windows notification (default, subtle)
+  #   asterisk     — Windows "Information" chime
+  #   exclamation  — Windows "Attention" chime
+  #   beep         — legacy 800 Hz / 200 ms square-wave tone (loud)
+  sound: chime
+
 speech:
   backend: whisper                     # local Whisper is the only supported backend
   language: en-GB                      # informational (Whisper uses "en")

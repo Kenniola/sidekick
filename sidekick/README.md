@@ -207,6 +207,23 @@ Lists replace wholesale (not merged). Run `sidekick init` to scaffold with a com
 ### Built-in
 Findings trigger the Windows default notification chime (`winsound.MessageBeep`, respects **Notification volume** in Sound Settings) and append to `~/.sidekick/live/alerts.jsonl`. Every tool response auto-surfaces new findings via a preamble banner.
 
+Sound is config-driven via `notifications.sound` in `default.yaml` or any customer profile:
+
+```yaml
+notifications:
+  sound: chime     # silent | chime | asterisk | exclamation | beep
+```
+
+| Value | Behaviour |
+|-------|-----------|
+| `silent` | No sound. |
+| `chime` (default) | Standard Windows notification (`MB_OK`). Subtle. |
+| `asterisk` | Windows "Information" chime (`MB_ICONASTERISK`). |
+| `exclamation` | Windows "Attention" chime (`MB_ICONEXCLAMATION`). |
+| `beep` | Legacy raw 800 Hz / 200 ms tone (`winsound.Beep`) — louder, plays at system master volume. |
+
+All values silently no-op on macOS/Linux.
+
 ### VS Code Extension (sidekick-notify)
 Optional companion extension in `repo/sidekick-notify/` — polls `alerts.jsonl` and shows VS Code toast notifications with a status bar badge.
 

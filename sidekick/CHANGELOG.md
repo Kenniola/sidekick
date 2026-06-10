@@ -30,6 +30,7 @@ All notable changes to sidekick-copilot are documented in this file.
 
 - `SIDEKICK_WHISPER_COMPUTE` environment variable (`int8` default; `int8_float16` / `float16` / `float32` supported).
 - `tests/test_speech_recogniser.py` regression suite covering `_format_ts`, factory backend fallback, and `chunk_start_offset` propagation.
+- **Config-driven notification sound** — new `notifications.sound` setting in `default.yaml` / customer profiles. Accepts `silent`, `chime` (default, standard Windows notification via `MessageBeep(MB_OK)`), `asterisk`, `exclamation`, or `beep` (legacy 800 Hz / 200 ms tone). Replaces the hard-coded 1 kHz / 300 ms `winsound.Beep`, which played at system master volume with no way to soften it. The new default chime respects the **Notification volume** slider in Windows Sound Settings.
 
 ---
 

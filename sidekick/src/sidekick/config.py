@@ -110,6 +110,26 @@ class OutputConfig:
 
 
 @dataclass
+class NotificationsConfig:
+    """Audible notification settings.
+
+    ``sound`` accepts one of:
+      - ``silent``       — no sound at all
+      - ``chime``        — standard Windows notification chime (default,
+                          ``winsound.MessageBeep(MB_OK)``). Subtle; respects
+                          the Notification volume slider in Sound Settings.
+      - ``asterisk``     — Windows "Information" chime (``MB_ICONASTERISK``)
+      - ``exclamation``  — Windows "Attention" chime (``MB_ICONEXCLAMATION``)
+      - ``beep``         — legacy raw 800 Hz / 200 ms square-wave tone
+                          (``winsound.Beep``). Plays at system master volume.
+
+    All sounds are no-ops on non-Windows platforms.
+    """
+
+    sound: str = "chime"
+
+
+@dataclass
 class SpeechConfig:
     """Local Whisper speech-to-text settings.
 
@@ -138,6 +158,7 @@ class SidekickConfig:
     triggers: TriggersConfig = field(default_factory=TriggersConfig)
     grounding: GroundingConfig = field(default_factory=GroundingConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
     rules: list[str] = field(default_factory=list)
 
@@ -285,6 +306,7 @@ def _parse_config(raw: dict) -> SidekickConfig:
     triggers_raw = raw.get("triggers", {})
     grounding_raw = raw.get("grounding", {})
     output_raw = raw.get("output", {})
+    notifications_raw = raw.get("notifications", {})
     speech_raw = raw.get("speech", {})
 
     # Resolve consultant names: flat key > nested participants
@@ -350,6 +372,9 @@ def _parse_config(raw: dict) -> SidekickConfig:
         output=OutputConfig(
             auto_save=output_raw.get("auto_save", True),
             include_session_summary=output_raw.get("include_session_summary", True),
+        ),
+        notifications=NotificationsConfig(
+            sound=str(notifications_raw.get("sound", "chime")).lower(),
         ),
         speech=SpeechConfig(
             backend=backend,
