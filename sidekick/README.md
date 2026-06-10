@@ -39,7 +39,7 @@ pip install -e ".[all]"
 sidekick init
 ```
 
-Install extras: `[live]` (Whisper), `[azure]` (Azure Speech + diarization), `[all]` (everything + dev).
+Install extras: `[live]` (Whisper + audio capture — required for the listen loop), `[dev]` (test + lint), `[all]` (everything).
 
 ### LLM Auth
 
@@ -80,11 +80,11 @@ All tiers retry with exponential backoff (1s → 2s → 4s) and fall through the
 │  AUDIO CAPTURE                                                     │
 │  WASAPI loopback (Teams/Zoom/Meet) → 5s chunks, 16kHz mono        │
 │                         │                                          │
-│               ┌─────────┴──────────┐                               │
-│               ▼                    ▼                               │
-│      Whisper (local CPU)    Azure Speech (Entra ID)                │
-│      base.en, ~150MB        speaker diarization                    │
-└───────────────┬────────────────────┘                               │
+│                         ▼                                          │
+│         Whisper (faster-whisper, local CPU, on-device)            │
+│         Default model: small.en (~470MB, ~5-7% WER)                │
+│         Session-relative timestamps; no network, no API keys      │
+└───────────────────────────────────────────────────────────────────┘
                 │                                                     │
                 ▼                                                     │
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -124,7 +124,7 @@ All tiers retry with exponential backoff (1s → 2s → 4s) and fall through the
 ```
 
 1. **Captures** system audio via WASAPI loopback (Teams, Zoom, Meet)
-2. **Transcribes** with Whisper (default) or Azure Speech (speaker diarization)
+2. **Transcribes** locally with faster-whisper (default `small.en`, ~470MB) — on-device, no cloud STT
 3. **Classifies** questions, hedges ("let me confirm…"), action items
 4. **Routes** to 3-lane priority queue (fast / standard / deep)
 5. **Executes** research and prototype generation automatically
@@ -177,27 +177,6 @@ Lists replace wholesale (not merged). Run `sidekick init` to scaffold with a com
 
 ---
 
-## Azure Speech (Optional)
-
-Higher-quality transcription with speaker diarization.
-
-```powershell
-pip install -e ".[azure]"
-```
-
-Add to your profile:
-```yaml
-acme:
-  speech:
-    backend: azure
-    azure_region: uksouth
-    azure_endpoint: "https://your-resource.cognitiveservices.azure.com/"
-```
-
-Auth: `azure_endpoint` uses Entra ID (`az login`). `azure_key` uses key auth. Endpoint takes priority if both set. Default is `backend: whisper` (zero setup).
-
----
-
 ## Notifications
 
 ### Built-in
@@ -222,9 +201,10 @@ Click the status bar badge to open `@sidekick status` in chat.
 | `SIDEKICK_WORKSPACE_ROOT` | CWD | Workspace root for repo search and grounding |
 | `SIDEKICK_HOME` | `~/.sidekick/` | Override user directory |
 | `SIDEKICK_CLASSIFY_INTERVAL` | `10` | Seconds between classifier calls |
-| `SIDEKICK_WHISPER_MODEL` | `base.en` | Whisper model size (Whisper backend only) |
+| `SIDEKICK_WHISPER_MODEL` | `small.en` | Whisper model size (`base.en` · `small.en` · `medium.en` · `large-v3`) |
+| `SIDEKICK_WHISPER_COMPUTE` | `int8` | CTranslate2 compute type (`int8` · `int8_float16` · `float16` · `float32`) |
 
-Speech config is in customer profiles, not env vars.
+Speech config (model, compute_type) can also be set per-customer in `customers.yaml`.
 
 ---
 
@@ -245,7 +225,7 @@ sidekick list-configs  # Show available profiles
 │  VS Code Copilot Chat ←→ @sidekick agent ←→ MCP Server  │
 ├──────────────────────────────────────────────────────────┤
 │  Audio Capture → Speech-to-Text → Classifier → Queue    │
-│  (WASAPI)        (Whisper/Azure)   (LLM)       (3-lane) │
+│  (WASAPI)        (Whisper, local) (LLM)       (3-lane)  │
 │                                                          │
 │                              ├── Research Pipeline       │
 │                              ├── Prototype Pipeline      │
@@ -297,7 +277,7 @@ repo/sidekick/
     ├── cli.py                  # CLI entry points (init, serve, list-configs)
     ├── transcript/
     │   ├── audio_capture.py    # WASAPI loopback audio capture
-    │   └── speech_recogniser.py# Whisper / Azure Speech backends
+    │   └── speech_recogniser.py# Local Whisper (faster-whisper) backend
     ├── analyst/
     │   ├── classifier.py       # LLM-powered transcript analyser
     │   ├── context.py          # Meeting state + TranscriptLine

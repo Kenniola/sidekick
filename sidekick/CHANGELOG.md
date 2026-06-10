@@ -4,6 +4,35 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ---
 
+## [0.3.0] — 2026-06-10
+
+### Removed
+
+- **Azure Speech backend** — entirely removed from the codebase, including `AzureSpeechRecogniser`, the `[azure]` install extra, `azure-identity` and `azure-cognitiveservices-speech` dependencies, all `AZURE_SPEECH_*` environment variable handling, `SpeechConfig.azure_*` fields, `speaker_map`, the installer's `azure` feature flag, and the `Azure Speech (Optional)` section from `README.md` and `INSTALL.md`.
+  - **Rationale:** real-meeting transcript analysis showed (1) diarization had been silently disabled (the code used `SpeechRecognizer` instead of `ConversationTranscriber` due to `SPXERR_INVALID_ARG` with Entra ID auth), and (2) Azure Speech's only practical advantage over local Whisper was lost. For HMRC/MoJ engagements, the on-device privacy posture of Whisper is also decisive.
+  - **Migration:** customer YAML profiles with `backend: azure` are auto-rewritten to `whisper` at load time and a warning is logged. Delete the now-unused `AZURE_SPEECH_*` lines from `~/.sidekick/.env`.
+
+### Changed
+
+- **Default Whisper model upgraded from `base.en` to `small.en`** (~150MB → ~470MB, WER ~8-10% → ~5-7%). Real-world transcripts of a 72-minute consulting call showed `base.en` produced visible misrecognitions on technical jargon (Fabric, OneLake, capacity SKUs); `small.en` resolves these.
+- **`SpeechRecogniser` Protocol now accepts a `chunk_start_offset: float = 0.0` parameter** so segment timestamps are session-relative (`HH:MM:SS.mmm` reflecting position within the meeting) rather than chunk-relative (always in `[0, 5s]`).
+- **`server.py` listen loop now tracks `listen_started_at`** and computes `chunk_start_offset = max(0, time.monotonic() - listen_started_at - chunk_duration)` for every transcription call.
+- `SpeechConfig` fields simplified to `backend`, `language`, `model`, `compute_type`.
+- `install.ps1` `-Features` parameter restricted to `live` (only supported value).
+- `pyproject.toml` `[all]` extra now expands to `[live, dev]`.
+
+### Fixed
+
+- **Chunk-relative transcript timestamps** — segments from every 5-second buffer previously displayed `00:00.000 → 00:05.000` regardless of when in the meeting they occurred, making transcript review of long sessions impossible. All segment timestamps are now meeting-wall-clock-relative.
+- `_format_ts()` clamps negative values to `0.0` instead of producing malformed strings.
+
+### Added
+
+- `SIDEKICK_WHISPER_COMPUTE` environment variable (`int8` default; `int8_float16` / `float16` / `float32` supported).
+- `tests/test_speech_recogniser.py` regression suite covering `_format_ts`, factory backend fallback, and `chunk_start_offset` propagation.
+
+---
+
 ## [0.2.0] — 2026-06-09
 
 ### Added

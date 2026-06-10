@@ -181,6 +181,13 @@ async def _run_listen_loop():
     # this timer — only recognised speech does.
     last_speech_time = time.monotonic()
 
+    # Session start — used to compute session-relative timestamps for each
+    # transcript line. Whisper segment offsets are chunk-relative (0..chunk_duration);
+    # we add elapsed-wall-clock-minus-chunk-duration so the printed timestamps
+    # reflect position within the meeting, not within the 5s buffer.
+    listen_started_at = time.monotonic()
+    chunk_duration = getattr(_audio_capture, "chunk_duration", 5.0)
+
     # Short timeout for the audio iterator — we poll frequently so we can
     # check the speech timer even while audio chunks keep arriving.
     AUDIO_POLL_SECS = 10.0
@@ -216,7 +223,16 @@ async def _run_listen_loop():
                 break
 
             try:
-                lines = await _recogniser.transcribe_chunk(audio_chunk)
+                # chunk_start_offset = elapsed wall-clock since session start,
+                # minus one chunk_duration (the chunk we just received was
+                # recording during the preceding 5 seconds). Clamped at 0.
+                chunk_start_offset = max(
+                    0.0,
+                    time.monotonic() - listen_started_at - chunk_duration,
+                )
+                lines = await _recogniser.transcribe_chunk(
+                    audio_chunk, chunk_start_offset=chunk_start_offset
+                )
                 if lines:
                     last_speech_time = time.monotonic()
                     pending_lines.extend(lines)

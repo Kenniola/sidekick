@@ -54,10 +54,10 @@ output:
   include_session_summary: true
 
 speech:
-  backend: whisper                     # 'whisper' (local, default) or 'azure' (requires Speech resource)
-  language: en-GB
-  # Azure credentials go in ~/.sidekick/.env (not here)
-  # To use Azure Speech: set backend to 'azure' and add AZURE_SPEECH_KEY to .env
+  backend: whisper                     # local Whisper is the only supported backend
+  language: en-GB                      # informational (Whisper uses "en")
+  model: small.en                      # base.en | small.en | medium.en | large-v3
+  compute_type: int8                   # int8 | int8_float16 | float16 | float32
 
 rules:
   - Always distinguish GA vs Preview features

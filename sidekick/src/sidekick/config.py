@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-# Load ~/.sidekick/.env if it exists (secrets, Azure Speech keys, etc.)
+# Load ~/.sidekick/.env if it exists (GITHUB_TOKEN, model overrides, etc.)
 _env_file = Path(os.environ.get("SIDEKICK_HOME", Path.home() / ".sidekick")) / ".env"
 if _env_file.exists():
     load_dotenv(_env_file, override=False)
@@ -111,18 +111,16 @@ class OutputConfig:
 
 @dataclass
 class SpeechConfig:
-    backend: str = "whisper"         # "whisper" or "azure"
-    azure_region: str = "uksouth"
-    azure_endpoint: str = ""         # for Entra ID auth (disableLocalAuth environments)
-    azure_key: str = ""              # for key auth (standard environments)
-    azure_resource_id: str = ""      # ARM resource ID — avoids az CLI lookup at runtime
-    language: str = "en-GB"
-    speaker_map: dict[str, str] = field(default_factory=dict)
-    # Maps raw speaker IDs from Azure Speech (e.g. "Guest-1") to names.
-    # Example:
-    #   speaker_map:
-    #     Guest-1: "Alice (Client)"
-    #     Guest-2: "Bob (Consultant)"
+    """Local Whisper speech-to-text settings.
+
+    Azure Speech was removed in v0.3.0 — sidekick now uses local Whisper
+    exclusively (no network, no API keys). See CHANGELOG for rationale.
+    """
+
+    backend: str = "whisper"         # only "whisper" is supported
+    language: str = "en-GB"          # informational; Whisper uses "en"
+    model: str = "small.en"          # base.en | small.en | medium.en | large-v3
+    compute_type: str = "int8"       # int8 | int8_float16 | float16 | float32
 
 
 @dataclass
@@ -303,15 +301,11 @@ def _parse_config(raw: dict) -> SidekickConfig:
         TriggerPattern(**t) for t in triggers_raw.get("client_topics", [])
     ]
 
-    # Azure Speech: env vars as fallback for secrets not in YAML
-    azure_key = (
-        speech_raw.get("azure_key", "")
-        or os.environ.get("AZURE_SPEECH_KEY", "")
-    )
-    azure_region = (
-        speech_raw.get("azure_region", "")
-        or os.environ.get("AZURE_SPEECH_REGION", "uksouth")
-    )
+    # Normalise legacy backend values. Azure Speech was removed in v0.3.0;
+    # the recogniser factory also logs a warning at runtime when a non-whisper
+    # value is encountered.
+    backend_raw = speech_raw.get("backend", "whisper")
+    backend = backend_raw if backend_raw in ("whisper", "", None) else "whisper"
 
     return SidekickConfig(
         customer=raw.get("customer", "General"),
@@ -358,15 +352,12 @@ def _parse_config(raw: dict) -> SidekickConfig:
             include_session_summary=output_raw.get("include_session_summary", True),
         ),
         speech=SpeechConfig(
-            backend=speech_raw.get("backend", "whisper"),
-            azure_region=azure_region,
-            azure_endpoint=speech_raw.get("azure_endpoint", "")
-                or os.environ.get("AZURE_SPEECH_ENDPOINT", ""),
-            azure_key=azure_key,
-            azure_resource_id=speech_raw.get("azure_resource_id", "")
-                or os.environ.get("AZURE_SPEECH_RESOURCE_ID", ""),
+            backend=backend,
             language=speech_raw.get("language", "en-GB"),
-            speaker_map=speech_raw.get("speaker_map", {}),
+            model=speech_raw.get("model", "small.en")
+                or os.environ.get("SIDEKICK_WHISPER_MODEL", "small.en"),
+            compute_type=speech_raw.get("compute_type", "int8")
+                or os.environ.get("SIDEKICK_WHISPER_COMPUTE", "int8"),
         ),
         rules=raw.get("rules", []),
     )

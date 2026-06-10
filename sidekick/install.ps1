@@ -7,8 +7,9 @@
 #   3. Runs `sidekick init` to scaffold config, register MCP, install VS Code extension
 
 param(
-    # Install extras: 'live' (default, Whisper), 'azure' (Azure Speech SDK), 'all'
-    [ValidateSet('live', 'azure', 'all')]
+    # Install extras: 'live' is the default (and only) feature set — local Whisper STT.
+    # Azure Speech support was removed in v0.3.0 (see CHANGELOG).
+    [ValidateSet('live')]
     [string]$Features = 'live'
 )
 
@@ -22,16 +23,10 @@ Write-Host ""
 $arch = $env:PROCESSOR_ARCHITECTURE
 $PythonFlag = @()  # extra args for uv tool install
 if ($arch -eq 'ARM64') {
-    if ($Features -in @('live', 'azure', 'all')) {
-        # Live/Azure deps only ship x64 wheels. Windows ARM64 runs x64 apps
-        # via emulation, so we install with x64 Python.
-        Write-Host "[i] ARM64 detected - installing with x64 Python for compatibility." -ForegroundColor Yellow
-        $PythonFlag = @("--python", "cpython-3.11-windows-x86_64")
-    }
-}
-if ($Features -in @('azure', 'all')) {
-    Write-Host "[i] Azure Speech SDK selected - requires an Azure Speech resource." -ForegroundColor Yellow
-    Write-Host "    Set credentials in ~/.sidekick/.env (see INSTALL.md)." -ForegroundColor Yellow
+    # faster-whisper / CTranslate2 only ship x64 wheels. Windows ARM64 runs x64
+    # apps via emulation, so we install with x64 Python.
+    Write-Host "[i] ARM64 detected - installing with x64 Python for compatibility." -ForegroundColor Yellow
+    $PythonFlag = @("--python", "cpython-3.11-windows-x86_64")
 }
 
 # --- Step 1: Ensure uv is installed ---

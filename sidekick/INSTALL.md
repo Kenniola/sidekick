@@ -82,64 +82,33 @@ gh auth status                                                     # GitHub toke
 | MCP server not showing in VS Code | Restart VS Code; check `%APPDATA%/Code/User/mcp.json` has a `sidekick` entry |
 | No audio captured | Check system audio is playing through default output device — Sidekick uses loopback capture |
 | `gh auth token` fails | Run `gh auth login` and select HTTPS + browser auth |
-| ARM64 + Azure Speech | Fully supported via x64 Python emulation (installer handles this automatically) |
+| ARM64 + faster-whisper | Fully supported via x64 Python emulation (installer handles this automatically) |
 | Extension not installed | Run manually: `code --install-extension <path-to-vsix>` — path shown in `sidekick init` output |
 
 ---
 
-## Azure Speech (optional)
+## Speech-to-Text
 
-By default, Sidekick uses **Whisper** for local speech-to-text (no API keys needed). To use **Azure Speech** instead (better accuracy, speaker diarization):
+Sidekick uses **faster-whisper** running locally on CPU. There are no API keys, no cloud STT, and no audio leaves the device — important for HMRC, MoJ, and other regulated customer engagements.
 
-### 1. Create an Azure Speech resource
-
-- Go to [Azure Portal → Speech Services](https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices)
-- Choose a region (e.g. `uksouth`) and pricing tier
-
-### 2. Add credentials to `~/.sidekick/.env`
-
-Open `%USERPROFILE%\.sidekick\.env` and add your credentials.
-
-**Option A — Key auth** (if local auth is enabled on your resource):
-
-```env
-AZURE_SPEECH_KEY=your-speech-resource-key
-AZURE_SPEECH_REGION=uksouth
-```
-
-**Option B — Entra ID auth** (if `disableLocalAuth` is enabled, or for zero-secret setups):
-
-```env
-AZURE_SPEECH_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
-AZURE_SPEECH_REGION=uksouth
-AZURE_SPEECH_RESOURCE_ID=/subscriptions/<sub-id>/resourceGroups/<rg>/providers/Microsoft.CognitiveServices/accounts/<name>
-```
-
-This uses `DefaultAzureCredential` (via `az login`). No keys needed.
-
-> **Never commit this file.** It stays local in your `~/.sidekick/` directory.
-
-### 3. Set the backend in your profile
-
-In `%USERPROFILE%\.sidekick\customers.yaml`:
+The default model is `small.en` (~470MB, ~5-7% WER). Override per-customer in `customers.yaml`:
 
 ```yaml
 myproject:
-  customer: Acme Corp
-  consultant: Your Name
   speech:
-    backend: azure
+    backend: whisper        # only supported value
+    model: medium.en        # base.en | small.en | medium.en | large-v3
+    compute_type: int8      # int8 | int8_float16 | float16 | float32
 ```
 
-The credentials are read from `.env` automatically — no secrets in YAML.
+Or via environment variables in `~/.sidekick/.env`:
 
-### 4. Reinstall with Azure extras
-
-```powershell
-irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex -Features azure
+```env
+SIDEKICK_WHISPER_MODEL=small.en
+SIDEKICK_WHISPER_COMPUTE=int8
 ```
 
-> **Note:** On ARM64 Windows, the installer uses x64 Python emulation so all features (including Azure Speech) work.
+> **Note:** Azure Speech support was removed in v0.3.0. See `CHANGELOG.md` for the rationale (diarization was unreliable with Entra ID auth, and `small.en` matches cloud STT accuracy on technical English).
 
 ---
 
