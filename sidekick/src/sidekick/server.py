@@ -742,7 +742,7 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
         f"\n"
         f"\U0001f7e2 Loading model and starting audio capture...\n"
         f"\n"
-        f"`suggest_questions` \u00b7 `research` \u00b7 `prototype` \u00b7 `stop`"
+        f"`suggest_questions` \u00b7 `add_context` \u00b7 `research` \u00b7 `offerings` \u00b7 `prototype` \u00b7 `status` \u00b7 `stop`"
     )
 
 
