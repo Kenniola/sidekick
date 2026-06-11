@@ -29,7 +29,8 @@ except ImportError:
 
 from mcp.server.fastmcp import FastMCP
 
-from sidekick.config import load_config, SidekickConfig
+from sidekick.config import load_config
+from sidekick.session_state import SessionState
 from sidekick.analyst.classifier import TranscriptAnalyst
 from sidekick.analyst.context import MeetingContext
 from sidekick.queue.priority_queue import PriorityQueue
@@ -60,35 +61,11 @@ def _install_hint(extras: str = "live") -> str:
 
 server = FastMCP("sidekick")
 
-_analyst: TranscriptAnalyst | None = None
-_queue: PriorityQueue | None = None
-_config: SidekickConfig | None = None
-_context: MeetingContext | None = None
-_session_log: SessionLog | None = None
+# All mutable session state lives in a single SessionState instance. Functions
+# mutate its attributes in place (no ``global`` needed); ``_init_session``
+# repopulates the components and ``_state.reset()`` clears per-session counters.
+_state = SessionState()
 
-# Tier 2 â€” live audio capture
-_audio_capture = None                        # AudioCapture instance
-_recogniser = None                           # SpeechRecogniser instance
-_listen_task: asyncio.Task | None = None
-
-# Error tracking for background loops
-_last_error: str | None = None
-
-# Delta tracking — unified counter for all tools
-_last_surface_output_count: int = 0
-_last_surface_thread_count: int = 0
-
-# Action pipelines
-_research: ResearchPipeline | None = None
-_prototype: PrototypePipeline | None = None
-
-# Domain auto-detection — runs after first 3 classifier batches
-_classify_batch_count: int = 0
-_domains_detected: bool = False
-
-# Grounding context cache — avoids re-reading files on every suggest_questions call
-_grounding_cache: str | None = None
-_grounding_cache_time: float = 0.0
 _GROUNDING_CACHE_TTL = 300.0  # 5 minutes
 
 
@@ -99,33 +76,21 @@ _GROUNDING_CACHE_TTL = 300.0  # 5 minutes
 
 def _init_session(config_name: str = "default"):
     """Initialise shared session components."""
-    global _config, _context, _analyst, _queue, _session_log
-    global _research, _prototype, _last_error
-    global _last_surface_output_count, _last_surface_thread_count
-    global _grounding_cache, _grounding_cache_time
 
-    _last_error = None
-    _last_surface_output_count = 0
-    _last_surface_thread_count = 0
-    _grounding_cache = None
-    _grounding_cache_time = 0.0
+    _state.reset()
 
-    global _classify_batch_count, _domains_detected
-    _classify_batch_count = 0
-    _domains_detected = False
-
-    _config = load_config(config_name)
-    _context = MeetingContext(customer_name=_config.customer)
-    _analyst = TranscriptAnalyst(config=_config, context=_context)
-    _queue = PriorityQueue(config=_config)
-    _session_log = SessionLog(config=_config)
-    _research = ResearchPipeline(config=_config)
-    _prototype = PrototypePipeline(config=_config)
+    _state.config = load_config(config_name)
+    _state.context = MeetingContext(customer_name=_state.config.customer)
+    _state.analyst = TranscriptAnalyst(config=_state.config, context=_state.context)
+    _state.queue = PriorityQueue(config=_state.config)
+    _state.session_log = SessionLog(config=_state.config)
+    _state.research = ResearchPipeline(config=_state.config)
+    _state.prototype = PrototypePipeline(config=_state.config)
 
     # Register the resolved model chains so every call_llm(tier=…) honours the
     # configured models (YAML + SIDEKICK_MODEL_<TIER> env overrides).
     from sidekick import llm as _llm
-    _llm.set_active_models(_config.models)
+    _llm.set_active_models(_state.config.models)
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +108,6 @@ async def _run_listen_loop():
 
     Auto-stops after SILENCE_TIMEOUT_SECS of no audio above threshold.
     """
-    global _audio_capture, _recogniser, _analyst, _queue, _context, _last_error
     consecutive_errors = 0
     MAX_CONSECUTIVE_ERRORS = 5
     SILENCE_TIMEOUT_SECS = 60
@@ -151,7 +115,7 @@ async def _run_listen_loop():
     CLASSIFY_INTERVAL = float(
         os.environ.get(
             "SIDEKICK_CLASSIFY_INTERVAL",
-            str(_config.sensitivity.analyst_interval_seconds),
+            str(_state.config.sensitivity.analyst_interval_seconds),
         )
     )
 
@@ -160,23 +124,23 @@ async def _run_listen_loop():
         from sidekick.transcript.audio_capture import AudioCapture
         from sidekick.transcript.speech_recogniser import create_recogniser
     except ImportError as e:
-        _last_error = f"Missing live dependencies: {e}"
-        logger.error(_last_error)
+        _state.last_error = f"Missing live dependencies: {e}"
+        logger.error(_state.last_error)
         return
 
     try:
         loop = asyncio.get_running_loop()
-        _recogniser = await loop.run_in_executor(
-            None, create_recogniser, _config.speech
+        _state.recogniser = await loop.run_in_executor(
+            None, create_recogniser, _state.config.speech
         )
     except Exception as e:
-        _last_error = f"Failed to load speech model: {e}"
-        logger.exception(_last_error)
+        _state.last_error = f"Failed to load speech model: {e}"
+        logger.exception(_state.last_error)
         return
 
-    _audio_capture = AudioCapture()
+    _state.audio_capture = AudioCapture()
 
-    devices = await loop.run_in_executor(None, _audio_capture.list_devices)
+    devices = await loop.run_in_executor(None, _state.audio_capture.list_devices)
     device_names = [d["name"] for d in devices] if devices else ["(none found)"]
     logger.info("Loopback devices: %s", ", ".join(device_names))
 
@@ -194,7 +158,7 @@ async def _run_listen_loop():
     # we add elapsed-wall-clock-minus-chunk-duration so the printed timestamps
     # reflect position within the meeting, not within the 5s buffer.
     listen_started_at = time.monotonic()
-    chunk_duration = getattr(_audio_capture, "chunk_duration", 5.0)
+    chunk_duration = getattr(_state.audio_capture, "chunk_duration", 5.0)
 
     # Short timeout for the audio iterator — we poll frequently so we can
     # check the speech timer even while audio chunks keep arriving.
@@ -202,7 +166,7 @@ async def _run_listen_loop():
 
     audio_iter = None
     try:
-        audio_iter = _audio_capture.start().__aiter__()
+        audio_iter = _state.audio_capture.start().__aiter__()
         while True:
             # Wait for next audio chunk.  Use a short poll interval so we
             # can check the speech-based timer even when audio keeps flowing
@@ -221,7 +185,7 @@ async def _run_listen_loop():
                         "No speech detected for %ds — auto-stopping.",
                         SILENCE_TIMEOUT_SECS,
                     )
-                    _last_error = (
+                    _state.last_error = (
                         f"Auto-stopped: no speech detected for {SILENCE_TIMEOUT_SECS}s. "
                         f"Call stop for the summary, or listen to start a new session."
                     )
@@ -238,7 +202,7 @@ async def _run_listen_loop():
                     0.0,
                     time.monotonic() - listen_started_at - chunk_duration,
                 )
-                lines = await _recogniser.transcribe_chunk(
+                lines = await _state.recogniser.transcribe_chunk(
                     audio_chunk, chunk_start_offset=chunk_start_offset
                 )
                 if lines:
@@ -256,7 +220,7 @@ async def _run_listen_loop():
                         "— auto-stopping.",
                         SILENCE_TIMEOUT_SECS,
                     )
-                    _last_error = (
+                    _state.last_error = (
                         f"Auto-stopped: no recognised speech for "
                         f"{SILENCE_TIMEOUT_SECS}s. "
                         f"Call stop for the summary, or listen to start "
@@ -290,18 +254,18 @@ async def _run_listen_loop():
     except asyncio.CancelledError:
         logger.info("Listen loop cancelled.")
     except Exception as e:
-        _last_error = f"Listen loop error: {type(e).__name__}: {e}"
+        _state.last_error = f"Listen loop error: {type(e).__name__}: {e}"
         logger.exception("Listen loop error.")
     finally:
         # Clean up resources on ANY exit (auto-stop, cancel, or error).
         # Without this, the WASAPI capture thread and Whisper model leak.
         if audio_iter is not None:
             await audio_iter.aclose()
-        if _audio_capture is not None:
-            _audio_capture.stop()
+        if _state.audio_capture is not None:
+            _state.audio_capture.stop()
             logger.info("Audio capture cleaned up after listen loop exit.")
-        if _recogniser is not None:
-            _recogniser.close()
+        if _state.recogniser is not None:
+            _state.recogniser.close()
             logger.info("Speech recogniser closed after listen loop exit.")
 
 
@@ -312,11 +276,10 @@ async def _detect_domains() -> None:
     which technology domains are being discussed. Detected domains supplement
     (not replace) the configured domains from customers.yaml.
     """
-    global _domains_detected
-    if _domains_detected or not _context or not _config:
+    if _state.domains_detected or not _state.context or not _state.config:
         return
 
-    transcript_sample = _context.full_transcript[-30:]
+    transcript_sample = _state.context.full_transcript[-30:]
     if len(transcript_sample) < 10:
         return
 
@@ -346,42 +309,40 @@ async def _detect_domains() -> None:
         detected = data.get("domains", [])
         if detected:
             # Merge with configured domains (no duplicates)
-            existing = {d.lower() for d in _config.domains}
+            existing = {d.lower() for d in _state.config.domains}
             new_domains = [d for d in detected if d.lower() not in existing]
             if new_domains:
-                _config.domains.extend(new_domains)
-                _context.detected_domains = new_domains
+                _state.config.domains.extend(new_domains)
+                _state.context.detected_domains = new_domains
                 logger.info("Auto-detected domains: %s", new_domains)
                 # Invalidate grounding cache since domains changed
-                global _grounding_cache
-                _grounding_cache = None
+                _state.grounding_cache = None
     except Exception as e:
         logger.debug("Domain detection failed: %s", e)
 
-    _domains_detected = True
+    _state.domains_detected = True
 
 
 async def _classify_and_dispatch(lines: list, consecutive_errors: int) -> None:
     """Send accumulated transcript lines to the classifier and dispatch results."""
-    global _classify_batch_count
-    _classify_batch_count += 1
+    _state.classify_batch_count += 1
 
-    action_items = await _analyst.analyse_chunk(lines)
+    action_items = await _state.analyst.analyse_chunk(lines)
 
     # Auto-detect domains after 3 batches (enough transcript context)
-    if _classify_batch_count == 3 and not _domains_detected:
+    if _state.classify_batch_count == 3 and not _state.domains_detected:
         await _detect_domains()
 
     for item in action_items:
-        await _queue.enqueue(item)
-    results = await _queue.process_ready(
-        research=_research,
-        prototype=_prototype,
-        context=_context,
-        domains=_config.domains if _config else None,
+        await _state.queue.enqueue(item)
+    results = await _state.queue.process_ready(
+        research=_state.research,
+        prototype=_state.prototype,
+        context=_state.context,
+        domains=_state.config.domains if _state.config else None,
     )
     for result in results:
-        _session_log.record(result)
+        _state.session_log.record(result)
         logger.info(
             "Sidekick output: [%s] %s",
             result.action_type,
@@ -396,8 +357,8 @@ async def _classify_and_dispatch(lines: list, consecutive_errors: int) -> None:
 def _notify(result) -> None:
     """Log a finding: resolve the configured sound and delegate to the notifier."""
     sound = (
-        _config.notifications.sound
-        if _config and getattr(_config, "notifications", None)
+        _state.config.notifications.sound
+        if _state.config and getattr(_state.config, "notifications", None)
         else "chime"
     )
     notifier.notify(result, sound=sound)
@@ -411,17 +372,16 @@ def _get_unseen_findings() -> str:
     MCP push limitation — the server can't initiate messages, but it can
     piggyback findings on any response.
     """
-    global _last_surface_output_count, _last_surface_thread_count
 
     try:
-        if not _session_log and not _context:
+        if not _state.session_log and not _state.context:
             return ""
 
         parts: list[str] = []
 
         # New threads
-        all_threads = list(_context.threads.values()) if _context else []
-        new_threads = all_threads[_last_surface_thread_count:]
+        all_threads = list(_state.context.threads.values()) if _state.context else []
+        new_threads = all_threads[_state.last_surface_thread_count:]
         if new_threads:
             for t in new_threads:
                 status_icon = "\u23f3" if t.status == "open" else "\u2705"
@@ -430,11 +390,11 @@ def _get_unseen_findings() -> str:
                     parts.append(f"     \u2514\u2500 {q}")
 
         # New research results
-        all_outputs = _session_log.outputs if _session_log else []
-        new_outputs = all_outputs[_last_surface_output_count:]
+        all_outputs = _state.session_log.outputs if _state.session_log else []
+        new_outputs = all_outputs[_state.last_surface_output_count:]
         logger.debug(
             "_get_unseen_findings: %d total outputs, surface_count=%d, %d new, %d new threads",
-            len(all_outputs), _last_surface_output_count, len(new_outputs), len(new_threads),
+            len(all_outputs), _state.last_surface_output_count, len(new_outputs), len(new_threads),
         )
         if new_outputs:
             for o in new_outputs:
@@ -454,8 +414,8 @@ def _get_unseen_findings() -> str:
                     parts.append(f"     \u2514\u2500 {src}")
 
         # Update counters
-        _last_surface_thread_count = len(all_threads)
-        _last_surface_output_count = len(all_outputs)
+        _state.last_surface_thread_count = len(all_threads)
+        _state.last_surface_output_count = len(all_outputs)
 
         if not parts:
             return ""
@@ -474,19 +434,18 @@ def _build_grounding_context() -> str:
     supplies the current config and live context. Synchronous file I/O —
     callers should wrap with ``asyncio.to_thread`` to avoid blocking the loop.
     """
-    return grounding.build_grounding_context(_config, _context)
+    return grounding.build_grounding_context(_state.config, _state.context)
 
 
 async def _get_grounding_context_async() -> str:
     """Get grounding context, using cache if fresh, else rebuild in a thread."""
-    global _grounding_cache, _grounding_cache_time
 
-    if _grounding_cache and (time.time() - _grounding_cache_time) < _GROUNDING_CACHE_TTL:
-        return _grounding_cache
+    if _state.grounding_cache and (time.time() - _state.grounding_cache_time) < _GROUNDING_CACHE_TTL:
+        return _state.grounding_cache
 
     result = await asyncio.to_thread(_build_grounding_context)
-    _grounding_cache = result
-    _grounding_cache_time = time.time()
+    _state.grounding_cache = result
+    _state.grounding_cache_time = time.time()
     return result
 
 
@@ -511,9 +470,8 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
         config: Customer config name (e.g., 'acme'). Defaults to 'default'.
         confirmed: Set to True after the user consents to audio transcription.
     """
-    global _audio_capture, _recogniser, _listen_task
 
-    if _listen_task and not _listen_task.done():
+    if _state.listen_task and not _state.listen_task.done():
         return "Already listening. Call stop to end the session first."
 
     # --- Consent gate ---
@@ -564,18 +522,18 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
 
     # Start the background loop — model loading and audio capture happen
     # there so this tool returns instantly.
-    _listen_task = asyncio.create_task(_run_listen_loop())
+    _state.listen_task = asyncio.create_task(_run_listen_loop())
 
     # Best-effort pre-warm of the primary LLM connection so the first
     # classifier/research call doesn't pay DNS + TLS setup cost.
     from sidekick import llm as _llm
     asyncio.create_task(_llm.prewarm())
 
-    domains = " \u00b7 ".join(_config.domains)
+    domains = " \u00b7 ".join(_state.config.domains)
     devices_str = " \u00b7 ".join(device_names)
 
     return (
-        f"{_config.customer} \u2014 \U0001f399\ufe0f live ({backend_label})\n"
+        f"{_state.config.customer} \u2014 \U0001f399\ufe0f live ({backend_label})\n"
         f"\n"
         f"Config: {config}.yaml \u00b7 Domains: {domains}\n"
         f"Devices: {devices_str}\n"
@@ -599,10 +557,10 @@ async def suggest_questions() -> str:
     and past engagement artifacts. Categorised as:
     clarify, probe, challenge, scope, stakeholder, risk, or next_step.
     """
-    if not _context:
+    if not _state.context:
         return "No active session. Start with: listen"
 
-    if len(_context.full_transcript) < 3:
+    if len(_state.context.full_transcript) < 3:
         return "Not enough transcript yet \u2014 need a few exchanges first."
 
     from sidekick.analyst.prompts import CONSULTANT_ADVISOR_PROMPT
@@ -610,37 +568,37 @@ async def suggest_questions() -> str:
 
     # Build a rich context block with key facts and open questions
     key_facts_str = ""
-    if _context.key_facts:
+    if _state.context.key_facts:
         key_facts_str = "\nKey facts established:\n" + "\n".join(
-            f"  - {f}" for f in _context.key_facts[-10:]
+            f"  - {f}" for f in _state.context.key_facts[-10:]
         )
     open_q_str = ""
-    if _context.open_questions:
+    if _state.context.open_questions:
         open_q_str = "\nOpen questions (unanswered):\n" + "\n".join(
-            f"  - {q['question']}" for q in _context.open_questions[-5:]
+            f"  - {q['question']}" for q in _state.context.open_questions[-5:]
         )
 
     context_block = (
-        f"Customer: {_config.customer}\n"
-        f"Domains: {', '.join(_config.domains)}\n"
-        f"Elapsed: {_context.elapsed_minutes:.0f} minutes\n"
-        f"Phase: {_context.current_phase}\n"
-        f"Transcript lines: {len(_context.full_transcript)}"
+        f"Customer: {_state.config.customer}\n"
+        f"Domains: {', '.join(_state.config.domains)}\n"
+        f"Elapsed: {_state.context.elapsed_minutes:.0f} minutes\n"
+        f"Phase: {_state.context.current_phase}\n"
+        f"Transcript lines: {len(_state.context.full_transcript)}"
         f"{key_facts_str}{open_q_str}"
     )
 
-    recent = _context.full_transcript[-50:]
+    recent = _state.context.full_transcript[-50:]
     transcript_block = "\n".join(
         f"[{getattr(line, 'start', '?')}] {getattr(line, 'speaker', '?')}: {getattr(line, 'text', str(line))}"
         for line in recent
     )
 
-    threads_block = _context.format_threads()
+    threads_block = _state.context.format_threads()
 
     research_block = "(none yet)"
-    if _session_log and _session_log.outputs:
+    if _state.session_log and _state.session_log.outputs:
         research_parts = []
-        for o in _session_log.outputs[-10:]:
+        for o in _state.session_log.outputs[-10:]:
             research_parts.append(f"[{o['action_type']}] {o['question']}: {o['answer'][:150]}")
         research_block = "\n".join(research_parts)
 
@@ -652,14 +610,14 @@ async def suggest_questions() -> str:
         threads_block=threads_block,
         research_block=research_block,
         grounding_block=grounding_block,
-        phase=_context.current_phase,
+        phase=_state.context.current_phase,
     )
 
     try:
         response_text = await call_llm(
             system_prompt=(
                 "You are a senior consulting advisor with deep expertise in "
-                f"{', '.join(_config.domains)}. "
+                f"{', '.join(_state.config.domains)}. "
                 "Think carefully through the reasoning chain before generating "
                 "questions. Return JSON only."
             ),
@@ -739,7 +697,7 @@ async def add_context(
         image_path: Path to a screenshot or diagram image (png, jpg) —
                     processed via vision LLM to extract a text description.
     """
-    if not _context:
+    if not _state.context:
         return "No active session. Start with: listen"
 
     if not content and not file_path and not image_path:
@@ -754,7 +712,7 @@ async def add_context(
 
     # 1. Free-text content
     if content:
-        _context.context_documents.append(content)
+        _state.context.context_documents.append(content)
         added.append(f"Text note ({len(content)} chars)")
 
     # 2. File content
@@ -771,7 +729,7 @@ async def add_context(
             # Cap at 4000 chars to stay within context limits
             if len(text) > 4000:
                 text = text[:4000] + "\n... (truncated)"
-            _context.context_documents.append(f"--- {fp.name} ---\n{text}")
+            _state.context.context_documents.append(f"--- {fp.name} ---\n{text}")
             added.append(f"File: {fp.name} ({len(text)} chars)")
         except Exception as e:
             return f"Error reading {fp.name}: {e}"
@@ -811,7 +769,7 @@ async def add_context(
                 timeout=30.0,
             )
 
-            _context.context_documents.append(
+            _state.context.context_documents.append(
                 f"--- Image: {ip.name} ---\n{description}"
             )
             added.append(f"Image: {ip.name} (extracted {len(description)} chars)")
@@ -819,7 +777,7 @@ async def add_context(
             return f"Error processing image {ip.name}: {e}"
 
     summary = ", ".join(added)
-    total = len(_context.context_documents)
+    total = len(_state.context.context_documents)
     return (
         _get_unseen_findings()
         + f"Context added: {summary}\n"
@@ -840,14 +798,14 @@ async def research(question: str, depth: str = "medium") -> str:
         question: The question to research.
         depth: 'quick' (fast lookup), 'medium' (multi-source), 'deep' (thorough).
     """
-    pipeline = _research or ResearchPipeline()
+    pipeline = _state.research or ResearchPipeline()
 
     result = await pipeline.execute_direct(
         question=question,
         depth=depth,
-        context=_context,
+        context=_state.context,
         tier="deep" if depth == "deep" else "standard",
-        domains=_config.domains if _config else None,
+        domains=_state.config.domains if _state.config else None,
     )
 
     return _get_unseen_findings() + result.format()
@@ -870,14 +828,14 @@ async def prototype(
         type: 'notebook' (PySpark), 'sql' (T-SQL), 'dax' (measures), 'pipeline'.
         columns: Optional comma-separated column list.
     """
-    config = _config or load_config("default")
-    pipeline = _prototype or PrototypePipeline(config=config)
+    config = _state.config or load_config("default")
+    pipeline = _state.prototype or PrototypePipeline(config=config)
 
     result = await pipeline.execute_direct(
         description=description,
         prototype_type=type,
         columns=columns,
-        context=_context,
+        context=_state.context,
     )
     return _get_unseen_findings() + result.format()
 
@@ -895,27 +853,27 @@ async def status() -> str:
     Also shows the full session overview.
     """
 
-    if not _context:
+    if not _state.context:
         return "No active session. Start with: listen"
 
     # Session header
-    if _audio_capture and _audio_capture.is_capturing:
+    if _state.audio_capture and _state.audio_capture.is_capturing:
         mode_label = "🎙️ live (Whisper)"
     else:
         mode_label = "session active"
 
     parts = [
-        f"{_config.customer} — {mode_label} — {_context.elapsed_minutes:.0f} min — {len(_context.full_transcript)} lines",
+        f"{_state.config.customer} — {mode_label} — {_state.context.elapsed_minutes:.0f} min — {len(_state.context.full_transcript)} lines",
     ]
 
     # Surface errors immediately
-    if _last_error:
-        parts.append(f"\n⚠️ ERROR: {_last_error}")
+    if _state.last_error:
+        parts.append(f"\n⚠️ ERROR: {_state.last_error}")
         parts.append("Try: stop, then listen again.\n")
 
     # In-progress queue items
-    if _queue:
-        in_progress = _queue.get_in_progress()
+    if _state.queue:
+        in_progress = _state.queue.get_in_progress()
         if in_progress:
             parts.append("")
             parts.append("RESEARCHING:")
@@ -923,7 +881,7 @@ async def status() -> str:
                 parts.append(f"  ⏳ {item.item.question[:80]}")
 
     # Full thread summary
-    all_threads = list(_context.threads.values()) if _context else []
+    all_threads = list(_state.context.threads.values()) if _state.context else []
     if all_threads:
         parts.append("")
         parts.append("ALL THREADS:")
@@ -932,13 +890,13 @@ async def status() -> str:
             parts.append(f"  {status_icon} {t.topic} ({t.status})")
 
     # Output count
-    total_outputs = len(_session_log.outputs) if _session_log else 0
-    in_progress_count = len(_queue.get_in_progress()) if _queue else 0
+    total_outputs = len(_state.session_log.outputs) if _state.session_log else 0
+    in_progress_count = len(_state.queue.get_in_progress()) if _state.queue else 0
     if total_outputs or in_progress_count:
-        phase_suffix = f" Still on the {_context.current_phase} topic." if hasattr(_context, 'current_phase') else ""
+        phase_suffix = f" Still on the {_state.context.current_phase} topic." if hasattr(_state.context, 'current_phase') else ""
         parts.append(f"\n{total_outputs} research completed, {in_progress_count} in progress.{phase_suffix}")
 
-    if len(parts) == 1 and not _last_error:
+    if len(parts) == 1 and not _state.last_error:
         parts.append("Listening... no threads detected yet.")
 
     # Prepend any new findings since last tool call
@@ -957,50 +915,48 @@ async def stop() -> str:
     Stops audio capture, generates a structured summary of all threads,
     research results, and action items, and saves the session log.
     """
-    global _listen_task, _audio_capture, _recogniser
-    global _session_log, _context, _last_error
 
     # Stop audio capture FIRST — this signals the capture thread to exit
     # cleanly before we cancel the listen task. Cancelling the task while
     # the capture thread is still writing to PyAudio can cause a C-level crash.
     # Note: _run_listen_loop's finally block may have already called stop()
     # and close() — these methods are safe to call multiple times.
-    if _audio_capture:
-        _audio_capture.stop()
+    if _state.audio_capture:
+        _state.audio_capture.stop()
 
-    if _listen_task and not _listen_task.done():
+    if _state.listen_task and not _state.listen_task.done():
         # Give the loop a few seconds to exit naturally via the sentinel
         try:
-            await asyncio.wait_for(_listen_task, timeout=5.0)
+            await asyncio.wait_for(_state.listen_task, timeout=5.0)
         except asyncio.TimeoutError:
-            _listen_task.cancel()
+            _state.listen_task.cancel()
             try:
-                await _listen_task
+                await _state.listen_task
             except asyncio.CancelledError:
                 pass
-    elif _listen_task and _listen_task.done():
+    elif _state.listen_task and _state.listen_task.done():
         # Task already finished (e.g. auto-stop) — retrieve any exception
         # so it doesn't go unhandled.
-        if not _listen_task.cancelled():
-            exc = _listen_task.exception()
+        if not _state.listen_task.cancelled():
+            exc = _state.listen_task.exception()
             if exc:
                 logger.warning("Listen task had unhandled exception: %s", exc)
 
-    if _recogniser:
-        _recogniser.close()
+    if _state.recogniser:
+        _state.recogniser.close()
 
     summary = "No active session."
     saved_files: list[str] = []
-    if _session_log and _context:
-        summary = _session_log.generate_summary(_context)
-        path = _session_log.save_to_disk()
+    if _state.session_log and _state.context:
+        summary = _state.session_log.generate_summary(_state.context)
+        path = _state.session_log.save_to_disk()
         if path:
             saved_files.append(str(path))
         # Export transcript and markdown summary
-        tp = _session_log.save_transcript(_context)
+        tp = _state.session_log.save_transcript(_state.context)
         if tp:
             saved_files.append(str(tp))
-        mp = _session_log.save_markdown_summary(_context)
+        mp = _state.session_log.save_markdown_summary(_state.context)
         if mp:
             saved_files.append(str(mp))
 
@@ -1010,10 +966,10 @@ async def stop() -> str:
         )
 
     # Reset state
-    _listen_task = None
-    _audio_capture = None
-    _recogniser = None
-    _last_error = None
+    _state.listen_task = None
+    _state.audio_capture = None
+    _state.recogniser = None
+    _state.last_error = None
 
     return _get_unseen_findings() + summary
 
