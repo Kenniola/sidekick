@@ -63,13 +63,10 @@ The background loop handles that automatically. The `research` tool exists for
 - **Call when**: user says "what should I ask?", "suggest questions", "help me steer",
   "what's the best question right now?", or anything about guiding the conversation
 - **What it does**: Runs a deep chain-of-thought analysis: extracts claims, detects
-  contradictions, identifies gaps, matches relevant VBD/IP offerings from Eng Hub,
-  and recommends high-impact questions grounded in team standards and past
-  engagement artifacts.
+  contradictions, identifies gaps, and recommends high-impact questions grounded in
+  team standards and past engagement artifacts.
 - **Domain-aware**: Prompts adapt to auto-detected domains from the transcript (e.g.
   Microsoft Fabric, PostgreSQL, AWS) — no hardcoded technology assumptions.
-- **Parallel I/O**: Eng Hub search and grounding context load concurrently via
-  `asyncio.gather()` for faster response.
 - **Requires**: An active `listen` session with at least a few transcript exchanges
 - **Returns**: A synthesis of the meeting so far, then ranked questions with:
   - Category (clarify / probe / challenge / scope / stakeholder / risk / next_step)
@@ -78,7 +75,6 @@ The background loop handles that automatically. The `research` tool exists for
   - Builds on — the specific client statement that triggered the suggestion
   - Corrections — things the consultant said that were inaccurate
   - Observations — patterns the advisor noticed (hedges, gaps, risks)
-  - Recommended offerings — VBD/IP offerings from Eng Hub that match the discussion
 - **Phase-aware**: Adjusts suggestions based on meeting stage:
   - Opening → scope, stakeholder, success criteria
   - Core → technical probes, constraints, dependencies
@@ -89,7 +85,7 @@ The background loop handles that automatically. The `research` tool exists for
 - **Call when**: user explicitly asks a technical question (e.g. "can Fabric connect
   to S3 in a VPC?", "what's the DirectLake row limit?")
 - **What it does**: Runs the research pipeline on-demand against MS Learn, workspace
-  docs, instruction files, and Eng Hub offerings. Fetches 8 results from MS Learn,
+  docs, and instruction files. Fetches 8 results from MS Learn,
   filters out shallow/training/certification URLs, and returns top 5.
 - **Domain-aware**: Synthesis prompt adapts to detected domains rather than assuming
   a fixed technology stack.
@@ -97,26 +93,6 @@ The background loop handles that automatically. The `research` tool exists for
 - **Returns**: Sourced answer with references
 - **Note**: This is for MANUAL questions only. Questions detected in the live
   transcript are researched automatically by the background loop.
-
-### `offerings` — Surface VBD/IP offerings from Eng Hub
-- **Call when**: user says "what can we offer?", "any VBDs for this?", "offerings",
-  "what delivery options?", "is there a PoC for this?", or the shortcut `o`
-- **What it does**: Searches the Cloud & AI Platforms Resource Center (eng.ms) for
-  relevant VBD, EDE, DE, WorkshopPLUS, PoC, ADR, and Solution Optimization offerings
-  that match the current meeting topic. Also runs automatically as part of research
-  answers when relevant offerings exist.
-- **Authentication**: eng.ms is Entra-gated and the Sidekick server process holds no
-  credentials for it. Live offerings are only returned when the host injects an
-  authenticated search source (e.g. wrapping the EngineeringHub MCP server) via
-  `EngHubPipeline.set_search_fn(...)`. When no source is wired, the tool returns an
-  explicit *auth required* message rather than empty or fabricated results.
-- **Parameters**: `topic` (optional) — if empty, infers from the current meeting
-  context (recent topic threads and key facts)
-- **Returns**: A list of matched offerings with type labels, titles, and eng.ms URLs
-  (each tagged `source="live"`)
-- **Use during meetings**: When a client describes a problem or workload, check
-  offerings to see if there's a funded delivery engagement that matches. This turns
-  advisory conversations into concrete next steps.
 
 ### `prototype` — Generate code on the fly
 - **Call when**: user says "show me the code", "prototype", "generate a notebook",
@@ -198,8 +174,6 @@ Interpret them as follows and call the appropriate tool immediately:
 | `.` | Call `status` (quick check) |
 | `?` | Call `suggest_questions` |
 | `r <topic>` | Call `research` with the text after `r` as the question |
-| `o` | Call `offerings` with current meeting context |
-| `o <topic>` | Call `offerings` with the text after `o` as the topic |
 | `p <description>` | Call `prototype` with the text after `p` as the description |
 
 When you see one of these, **do not ask for clarification** — just call the tool.

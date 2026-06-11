@@ -153,9 +153,6 @@ OPEN THREADS:
 RESEARCH COMPLETED:
 {research_block}
 
-RELEVANT VBD/IP OFFERINGS (from Eng Hub Resource Center):
-{offerings_block}
-
 GROUNDING — TEAM STANDARDS & PAST ENGAGEMENT CONTEXT:
 {grounding_block}
 
@@ -173,21 +170,10 @@ REASONING CHAIN — Think through these steps before generating questions:
 4. RISK DETECTION: What assumptions are being made without evidence?
    What could go wrong that nobody has mentioned?
 
-5. OFFERINGS MATCH: Do any of the VBD/IP offerings directly address a gap,
-   risk, or need identified in the conversation? If so, recommend the most
-   relevant offering as an actionable next step.
-   Offering types and when to recommend each:
-   - **PoC** (Proof of Concept): Customer needs to validate feasibility before committing. 1-3 weeks.
-   - **ADR** (Architecture Design Review): Complex architecture needs expert review. 2-5 days.
-   - **WorkshopPLUS**: Team needs hands-on training or skill-building. 2-5 days.
-   - **EDE** (Engineering Direct Engagement): Specific engineering problem needs deep MS support. Variable.
-   - **VBD** (Value-Based Delivery): Strategic engagement with defined business outcomes. 2-4 weeks.
-   - **Solution Optimization**: Existing deployment needs performance/cost tuning. 1-2 weeks.
-
-6. STRATEGIC POSITIONING: What single question would shift the conversation
+5. STRATEGIC POSITIONING: What single question would shift the conversation
    in the most productive direction right now?
 
-7. TIMING & PHASE: Given the meeting is in the "{phase}" phase, which types
+6. TIMING & PHASE: Given the meeting is in the "{phase}" phase, which types
    of questions are most appropriate?
    - opening: focus on understanding scope, stakeholders, success criteria
    - core: probe technical details, constraints, dependencies, timelines
@@ -239,8 +225,5 @@ Return a JSON object:
   ],
   "corrections": [
     "Optional: things the consultant said that were inaccurate and should be corrected"
-  ],
-  "recommended_offerings": [
-    "Optional: VBD/IP offerings that directly address a gap or need identified — include offering name, type, and why it's relevant (1 sentence each)"
   ]
 }}"""

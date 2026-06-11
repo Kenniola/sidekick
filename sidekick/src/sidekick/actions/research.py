@@ -9,12 +9,9 @@ from pathlib import Path
 
 import httpx
 
-from sidekick.actions.enghub import EngHubPipeline
 from sidekick.llm import call_llm
 
 logger = logging.getLogger(__name__)
-
-_enghub = EngHubPipeline()
 
 SYNTHESIS_SYSTEM_PROMPT = """You are a {domain_scope} technical research assistant \
 embedded in a live customer engagement. Your answers are read aloud by the \
@@ -99,7 +96,7 @@ class ResearchPipeline:
 
         Args:
             tier: LLM tier for synthesis — 'deep' (claude-opus-4.7) by default.
-            domains: Customer domains for scoping EngHub search.
+            domains: Customer domains for scoping the search query.
         """
         # Rewrite the raw transcript question into a focused search query
         search_query = await self._rewrite_search_query(question, domains)
@@ -110,30 +107,6 @@ class ResearchPipeline:
 
         # Gather live web context from MS Learn and verified sources
         web_context = await self._search_web(search_query)
-
-        # Search Eng Hub for relevant VBD/IP offerings
-        enghub_context = ""
-        try:
-            enghub_result = await _enghub.search(
-                question,
-                domains=domains,
-            )
-            if enghub_result.offerings:
-                enghub_context = enghub_result.format()
-        except Exception as e:
-            logger.debug("Eng Hub search skipped: %s", e)
-
-        # Build the synthesis prompt
-        offerings_block = ""
-        if enghub_context:
-            offerings_block = f"""
-
-VBD/IP OFFERINGS (from Eng Hub Resource Center):
-{enghub_context}
-
-If any offerings are directly relevant to the question, mention them \
-in a brief "Relevant Offerings:" section after your answer. Only include \
-offerings that genuinely match the topic — do not force-fit."""
 
         # Build customer engagement context
         customer_block = ""
@@ -173,7 +146,7 @@ TEAM STANDARDS:
 {instruction_context}
 
 MEETING CONTEXT:
-{self._format_meeting_context(context)}{offerings_block}
+{self._format_meeting_context(context)}
 
 Research this question and provide a concise, sourced answer. \
 Anchor your response to the customer's specific context where possible. \

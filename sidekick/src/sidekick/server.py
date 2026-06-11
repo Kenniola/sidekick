@@ -1,11 +1,11 @@
 """Sidekick MCP server — real-time meeting co-pilot.
 
-Eight tools, focused on live consulting value:
+Seven tools, focused on live consulting value:
 
   listen            — capture system audio and transcribe in real-time
   suggest_questions — synthesise the meeting and recommend what to ask
-  add_context       — inject live context (notes, docs, diagrams)\n  research          — answer a question instantly
-  offerings         — surface VBD/IP offerings from Eng Hub
+  add_context       — inject live context (notes, docs, diagrams)
+  research          — answer a question instantly
   prototype         — generate working code on the fly
   status            — show what Sidekick has found so far
   stop              — end session and get the summary
@@ -38,11 +38,7 @@ from sidekick.analyst.context import MeetingContext
 from sidekick.queue.priority_queue import PriorityQueue
 from sidekick.actions.research import ResearchPipeline
 from sidekick.actions.prototype import PrototypePipeline
-from sidekick.actions.enghub import EngHubPipeline
 from sidekick.output.session_log import SessionLog
-
-# Shared pipeline instances (reused across tool calls)
-_enghub_pipeline = EngHubPipeline()
 
 logger = logging.getLogger("sidekick")
 
@@ -70,9 +66,6 @@ _last_error: str | None = None
 _last_surface_output_count: int = 0
 _last_surface_thread_count: int = 0
 
-# Track which thread topics have already been searched for offerings
-_offerings_searched_topics: set[str] = set()
-
 # Action pipelines
 _research: ResearchPipeline | None = None
 _prototype: PrototypePipeline | None = None
@@ -97,13 +90,11 @@ def _init_session(config_name: str = "default"):
     global _config, _context, _analyst, _queue, _session_log
     global _research, _prototype, _last_error
     global _last_surface_output_count, _last_surface_thread_count
-    global _offerings_searched_topics
     global _grounding_cache, _grounding_cache_time
 
     _last_error = None
     _last_surface_output_count = 0
     _last_surface_thread_count = 0
-    _offerings_searched_topics = set()
     _grounding_cache = None
     _grounding_cache_time = 0.0
 
@@ -384,58 +375,6 @@ async def _classify_and_dispatch(lines: list, consecutive_errors: int) -> None:
     # Notify for new findings (sound alert + log file)
     for result in results:
         _notify(result)
-
-    # Proactive offerings — search for VBDs when new thread topics emerge
-    await _proactive_offerings_search()
-
-
-async def _proactive_offerings_search() -> None:
-    """Search for VBD/IP offerings on new thread topics.
-
-    Runs after each classify cycle. Only searches topics that haven't been
-    checked yet. If a match is found, records it as a high-priority offering
-    result so the toast notification fires.
-    """
-    if not _context or not _context.threads or not _config:
-        return
-
-    new_topics: list[str] = []
-    for t in _context.threads.values():
-        if t.topic not in _offerings_searched_topics:
-            _offerings_searched_topics.add(t.topic)
-            new_topics.append(t.topic)
-
-    if not new_topics:
-        return
-
-    try:
-        from sidekick.queue.priority_queue import ActionResult
-
-        topic_str = ", ".join(new_topics[:3])
-        result = await _enghub_pipeline.search(topic_str, domains=_config.domains)
-
-        if result.offerings:
-            top = result.offerings[:3]
-            lines = [f"Relevant offerings for \"{topic_str}\":"]
-            for o in top:
-                lines.append(f"  [{o.offering_type}] {o.title}")
-                if o.description:
-                    lines.append(f"    {o.description[:100]}")
-                if o.url:
-                    lines.append(f"    {o.url}")
-
-            ar = ActionResult(
-                question=f"VBD match: {topic_str}",
-                action_type="offering",
-                answer="\n".join(lines),
-                priority="high",
-                confidence="high",
-            )
-            _session_log.record(ar)
-            _notify(ar)
-            logger.info("Proactive offering surfaced for: %s", topic_str)
-    except Exception:
-        logger.debug("Proactive offerings search failed", exc_info=True)
 
 
 def _notify(result) -> None:
@@ -777,7 +716,7 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
         f"\n"
         f"\U0001f7e2 Loading model and starting audio capture...\n"
         f"\n"
-        f"`suggest_questions` \u00b7 `add_context` \u00b7 `research` \u00b7 `offerings` \u00b7 `prototype` \u00b7 `status` \u00b7 `stop`"
+        f"`suggest_questions` \u00b7 `add_context` \u00b7 `research` \u00b7 `prototype` \u00b7 `status` \u00b7 `stop`"
     )
 
 
@@ -790,8 +729,8 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
 async def suggest_questions() -> str:
     """Synthesise the meeting and recommend high-impact questions to ask the client.
 
-    Uses deep chain-of-thought reasoning with grounding from team standards,
-    past engagement artifacts, and relevant VBD/IP offerings. Categorised as:
+    Uses deep chain-of-thought reasoning with grounding from team standards
+    and past engagement artifacts. Categorised as:
     clarify, probe, challenge, scope, stakeholder, risk, or next_step.
     """
     if not _context:
@@ -839,50 +778,13 @@ async def suggest_questions() -> str:
             research_parts.append(f"[{o['action_type']}] {o['question']}: {o['answer'][:150]}")
         research_block = "\n".join(research_parts)
 
-    # Parallel fetch: EngHub offerings + grounding context
-    # Both are independent I/O operations — run concurrently to halve latency.
-    async def _fetch_offerings() -> str:
-        try:
-            thread_topics = [
-                t.topic for t in _context.threads.values()
-                if t.status == "open"
-            ] if _context.threads else []
-
-            if thread_topics:
-                topic_str = ", ".join(thread_topics[-5:])
-            else:
-                topic_str = " ".join(_context.key_facts[-5:]) if _context.key_facts else ""
-
-            if topic_str:
-                config = _config or load_config("default")
-                eh_result = await asyncio.wait_for(
-                    _enghub_pipeline.search(topic_str, domains=config.domains),
-                    timeout=10.0,
-                )
-                if eh_result and eh_result.offerings:
-                    parts = []
-                    for o in eh_result.offerings[:5]:
-                        parts.append(f"- [{o.offering_type}] {o.title}: {o.description[:120]}")
-                        if o.url:
-                            parts.append(f"  URL: {o.url}")
-                    return "\n".join(parts)
-        except asyncio.TimeoutError:
-            logger.debug("Eng Hub search timed out (10s cap)")
-        except Exception:
-            logger.debug("Eng Hub search in suggest_questions failed", exc_info=True)
-        return "(no offerings matched)"
-
-    offerings_block, grounding_block = await asyncio.gather(
-        _fetch_offerings(),
-        _get_grounding_context_async(),
-    )
+    grounding_block = await _get_grounding_context_async()
 
     prompt = CONSULTANT_ADVISOR_PROMPT.format(
         context_block=context_block,
         transcript_block=transcript_block,
         threads_block=threads_block,
         research_block=research_block,
-        offerings_block=offerings_block,
         grounding_block=grounding_block,
         phase=_context.current_phase,
     )
@@ -1091,43 +993,7 @@ async def research(question: str, depth: str = "medium") -> str:
     return _get_unseen_findings() + result.format()
 
 # ---------------------------------------------------------------------------
-# Tool 5: offerings — surface VBD/IP from Eng Hub
-# ---------------------------------------------------------------------------
-
-
-@server.tool()
-async def offerings(topic: str = "") -> str:
-    """Surface relevant VBD/IP offerings from the Eng Hub Resource Center.
-
-    Searches the Cloud & AI Platforms Resource Center for PoCs, ADRs,
-    WorkshopPLUS, Solution Optimizations, and other delivery offerings
-    that match the current meeting topic.
-
-    Args:
-        topic: The topic to search for (e.g. "lakehouse architecture",
-               "Power BI DirectLake", "database migration"). If empty,
-               uses the current meeting context to infer the topic.
-    """
-    # If no topic provided, infer from meeting context
-    if not topic and _context:
-        recent_topics = getattr(_context, "topic_threads", [])
-        if recent_topics:
-            topic = ", ".join(t.get("topic", str(t)) if isinstance(t, dict) else str(t) for t in recent_topics[-3:])
-        else:
-            key_facts = getattr(_context, "key_facts", [])
-            topic = " ".join(key_facts[-5:]) if key_facts else ""
-
-    if not topic:
-        return "No topic provided and no meeting context available. Provide a topic, e.g.: offerings lakehouse migration"
-
-    config = _config or load_config("default")
-    result = await _enghub_pipeline.search(topic, domains=config.domains)
-    return _get_unseen_findings() + result.format()
-
-
-
-# ---------------------------------------------------------------------------
-# Tool 6: prototype â€” generate code on the fly
+# Tool 5: prototype â€” generate code on the fly
 # ---------------------------------------------------------------------------
 
 
@@ -1157,7 +1023,7 @@ async def prototype(
 
 
 # ---------------------------------------------------------------------------
-# Tool 7: status â€” what has Sidekick found so far?
+# Tool 6: status â€” what has Sidekick found so far?
 # ---------------------------------------------------------------------------
 
 
@@ -1225,7 +1091,7 @@ async def status() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool 8: stop â€” end session with summary
+# Tool 7: stop â€” end session with summary
 # ---------------------------------------------------------------------------
 
 

@@ -102,8 +102,8 @@ All tiers retry with exponential backoff (1s → 2s → 4s) and fall through the
 │  └────────┬────────┴────────┬─────────┴────────┬─────────┘         │
 │           ▼                 ▼                  ▼                    │
 │    Research Pipeline   Research Pipeline   Prototype Pipeline      │
-│    (MS Learn, repo,    + Eng Hub VBD       Consultant Advisor      │
-│     .github/instr.)      offerings         (7-step reasoning)      │
+│    (MS Learn, repo,    + verified web      Consultant Advisor      │
+│     .github/instr.)      sources           (6-step reasoning)      │
 └───────────────┬─────────────────────────────────────────────────────┘
                 │
                 ▼
@@ -139,19 +139,18 @@ The `research` tool is for manual ad-hoc questions — the loop handles everythi
 | Tool | Shortcut | Purpose |
 |------|----------|---------|
 | `listen` | — | Start audio capture + autonomous loop |
-| `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, offerings |
+| `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, observations |
 | `add_context` | — | Inject live context — notes, files, or images (vision LLM) |
-| `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, Eng Hub) |
-| `offerings` | `o` | VBD/IP offerings from Eng Hub (PoC, ADR, WorkshopPLUS) — needs a host-injected authenticated search source; otherwise reports *auth required* |
+| `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, verified web sources) |
 | `prototype` | `p <desc>` | Generate code (PySpark, T-SQL, DAX, pipeline) |
 | `status` | `s` / `.` | New threads and research since last check |
 | `stop` | `x` | End session, save summary |
 
 ### `suggest_questions` — Consultant Advisor
 
-7-step chain-of-thought: claim analysis → contradiction detection → gap analysis → risk detection → offerings match → strategic positioning → timing assessment.
+6-step chain-of-thought: claim analysis → contradiction detection → gap analysis → risk detection → strategic positioning → timing assessment.
 
-Returns ranked questions with category, impact, rationale, corrections, observations, and matched VBD/IP offerings. Phase-aware (opening → core → deep-dive → wrap-up). Grounded in `.github/instructions/` and past engagement artifacts.
+Returns ranked questions with category, impact, rationale, corrections, and observations. Phase-aware (opening → core → deep-dive → wrap-up). Grounded in `.github/instructions/` and past engagement artifacts.
 
 ### `add_context` — Live Context Injection
 
@@ -272,7 +271,6 @@ sidekick list-configs  # Show available profiles
 │                              ├── Research Pipeline       │
 │                              ├── Prototype Pipeline      │
 │                              └── Consultant Advisor      │
-│                                   + Eng Hub offerings    │
 │                                   + grounding context    │
 │  Meeting Context ←→ Session Log → ~/.sidekick/outputs/   │
 │  Notifications → alerts.jsonl → sidekick-notify ext      │
@@ -284,7 +282,7 @@ Research searches: workspace docs (keyword + content scoring) → `.github/instr
 ### v0.2.0 Optimisations
 
 - **Domain auto-detection** — LLM analyses first 30 transcript lines at batch 3 to detect domains; merges with config and invalidates grounding cache
-- **Parallel I/O** — `suggest_questions` runs Eng Hub + grounding context via `asyncio.gather()` (grounding uses a shared httpx client; Eng Hub uses the host-injected search source — no per-call client creation)
+- **Grounding context** — `suggest_questions` loads team standards and past engagement artifacts via a shared httpx client (no per-call client creation)
 - **`add_context` tool** — inject notes, files (.md/.txt/.py/.json, 4KB cap), or images (base64 → vision LLM extraction, 10MB cap) mid-session
 - **Smart dedup** — priority queue checks new questions against last 10 completed outputs via fast-tier LLM; duplicates are re-researched with enriched context (previous answer appended) rather than skipped
 - **Better web search** — fetches 8 MS Learn results, filters via URL depth and rejects training/certification pages, returns top 5
