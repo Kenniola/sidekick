@@ -265,25 +265,26 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 
 ## 11. Recommended Roadmap
 
-**Phase 0 — Hygiene (½ day, do first)**
-- [ ] Remove stale Azure branches + docstring in `server.py` (§5.1)
-- [ ] Clear orphaned `.pyc`; confirm `__pycache__/` gitignored (§5.2)
-- [ ] Resolve `install.ps1` TODO; centralise the package source URL (§5.5)
-- [ ] Pre-warm one LLM connection (perf quick win, §8b)
+**Phase 0 — Hygiene (½ day, do first)** ✅ **COMPLETE**
+- [x] Remove stale Azure branches + docstring in `server.py` (§5.1)
+- [x] Clear orphaned `.pyc`; confirm `__pycache__/` gitignored (§5.2)
+- [x] Resolve `install.ps1` TODO; centralise the package source URL (§5.5)
+- [x] Pre-warm one LLM connection (perf quick win, §8b)
 
-**Phase 1 — Config-driven models (1 day; your ask — global only, no per-customer)**
-- [ ] `ModelsConfig` dataclass + global `models:` in `default.yaml`, code defaults preserved (§6)
-- [ ] `call_llm(chain=…)`; data-driven provider registry; `SIDEKICK_MODEL_<TIER>` env overrides
-- [ ] `sidekick models` debug command; provider-adapter note for non-OpenAI APIs
+**Phase 1 — Config-driven models (1 day; your ask — global only, no per-customer)** ✅ **COMPLETE**
+- [x] `ModelsConfig` dataclass + global `models:` in `default.yaml`, code defaults preserved (§6)
+- [x] `call_llm(chain=…)`; data-driven provider registry; `SIDEKICK_MODEL_<TIER>` env overrides
+- [x] `sidekick models` debug command; provider-adapter note for non-OpenAI APIs
 
-**Phase 2 — Consolidation (2–3 days)**
-- [ ] Extract grounding, notifier, listen-engine out of `server.py`
-- [ ] `SessionState` dataclass to replace module globals
-- [ ] Single `parse_llm_json` helper (§5.4)
-- [ ] Token-budget the deep-tier `suggest_questions` prompt (perf, §8b)
-- [ ] Fold dedup into the classifier prompt to remove a round-trip (perf, §8b)
+**Phase 2 — Consolidation (2–3 days)** ✅ **COMPLETE** *(test-first, one commit per slice; 48 → 109 tests)*
+- [x] Extract grounding, notifier, listen-engine out of `server.py` — `grounding.py`, `output/notifier.py`, `engine.py`. *Note: `engine.py` holds `detect_domains` + `classify_and_dispatch`; the live audio loop (`_run_listen_loop`) is **deferred to Phase 3** pending a live-loop test harness.*
+- [x] `SessionState` dataclass to replace module globals — every `global` statement removed
+- [x] Single `parse_llm_json` helper (§5.4)
+- [x] Token-budget the deep-tier `suggest_questions` prompt (perf, §8b) — `prompt_budget.clip`
+- [x] Fold dedup into the classifier prompt to remove a round-trip (perf, §8b) — *delivered as a **deterministic local check** (`dedup.py`, token-Jaccard + difflib) instead of folding into the classifier prompt; removes the second LLM round-trip entirely with zero contract change and zero added tokens.*
 
 **Phase 3 — Test hardening (2–3 days)**
+- [ ] Live audio loop (`_run_listen_loop`) test harness, then extract it from `server.py` *(carried over from Phase 2)*
 - [ ] Priority queue (route/merge/dedup/expiry/timeout)
 - [ ] LLM tier routing + fallback (mock httpx)
 - [ ] Config deep-merge; classifier JSON parse; session summary
@@ -306,4 +307,4 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 
 ---
 
-*Phase 0 + Phase 1 in progress.*
+*Phases 0–2 complete (commit `0a16a09`, 109 tests passing). Phases 3 & 4 next.*
