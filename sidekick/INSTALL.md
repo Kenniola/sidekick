@@ -112,6 +112,32 @@ SIDEKICK_WHISPER_COMPUTE=int8
 
 ---
 
+## Web Search Grounding
+
+The `research` tool always queries the **Microsoft Learn API** — free, key-less, and authoritative for Microsoft, Fabric, and Azure content. This covers the majority of engagements with **no configuration required**.
+
+To broaden verified results to **non-Microsoft sources** (AWS, Databricks, Delta, Spark, PostgreSQL), set **one** web-search API key in `~/.sidekick/.env`:
+
+```env
+# Pick ONE (Tavily is preferred when both are present):
+TAVILY_API_KEY=tvly-xxxxxxxx     # https://tavily.com
+BRAVE_API_KEY=BSA-xxxxxxxx       # https://brave.com/search/api/
+```
+
+| Behaviour | No key | Key set |
+|-----------|--------|---------|
+| Microsoft / Fabric / Azure verified URLs | Yes | Yes |
+| AWS / Databricks / Spark / PostgreSQL verified URLs | No (LLM knowledge only, no citations) | Yes |
+| Per-domain routing (e.g. AWS question promotes AWS docs) | n/a | Yes |
+
+**Notes for regulated engagements (HMRC / MoJ):**
+- The key is **per-machine** and local to `~/.sidekick/.env` — never committed, never in `customers.yaml`. Each consultant sets their own.
+- These are **external SaaS**. Only the **query text** leaves the device (no transcript or customer data), and results are filtered to the verified-source allowlist before anything is surfaced.
+- Both providers offer free tiers. Leave both keys **unset** unless external-source breadth is explicitly approved for the engagement.
+- Customers can add or re-weight a verified source without code changes via `grounding.extra_trusted_domains` in their profile (`{host: weight}`).
+
+---
+
 ## Uninstall
 
 ### Automated (recommended)

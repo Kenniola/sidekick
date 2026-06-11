@@ -88,6 +88,15 @@ def _cmd_init():
             "#   large-v3  ~3.1GB  multilingual\n"
             "# SIDEKICK_WHISPER_MODEL=small.en\n"
             "# SIDEKICK_WHISPER_COMPUTE=int8\n"
+            "\n"
+            "# Web search grounding (optional).\n"
+            "# research always uses the free Microsoft Learn API (no key).\n"
+            "# Set ONE key below to also pull verified non-Microsoft sources\n"
+            "# (AWS, Databricks, Spark, PostgreSQL). Tavily is preferred when\n"
+            "# both are present. No key = Microsoft Learn only (no error).\n"
+            "#   Tavily: https://tavily.com   Brave: https://brave.com/search/api/\n"
+            "# TAVILY_API_KEY=tvly-xxxxxxxx\n"
+            "# BRAVE_API_KEY=BSA-xxxxxxxx\n"
         )
         env_file.write_text(env_content, encoding="utf-8")
         print(f"\u2713 Created {env_file}")
