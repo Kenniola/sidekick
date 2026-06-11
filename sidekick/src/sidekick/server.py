@@ -12,12 +12,10 @@ Seven tools, focused on live consulting value:
 """
 
 import asyncio
-import json
 import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -39,6 +37,7 @@ from sidekick.queue.priority_queue import PriorityQueue
 from sidekick.actions.research import ResearchPipeline
 from sidekick.actions.prototype import PrototypePipeline
 from sidekick.output.session_log import SessionLog
+from sidekick.output import notifier
 
 logger = logging.getLogger("sidekick")
 
@@ -395,64 +394,13 @@ async def _classify_and_dispatch(lines: list, consecutive_errors: int) -> None:
 
 
 def _notify(result) -> None:
-    """Log a finding to alerts.jsonl and the MCP output channel.
-
-    The user sees findings via the auto-surface preamble on their next
-    tool call — no sound alert needed.
-    """
-    # 1. Audible alert (Windows only). Sound style is config-driven
-    # via ``notifications.sound`` in customers.yaml / default.yaml.
-    # Falls back to the standard chime if config isn't loaded yet.
-    try:
-        import sys
-        if sys.platform == "win32":
-            import winsound
-            sound = (
-                _config.notifications.sound
-                if _config and getattr(_config, "notifications", None)
-                else "chime"
-            )
-            if sound == "silent":
-                pass  # explicitly disabled
-            elif sound == "beep":
-                # Legacy raw tone — 800 Hz, 200 ms (softer than the old 1 kHz/300 ms)
-                winsound.Beep(800, 200)
-            else:
-                # MessageBeep variants — respect Notification volume slider
-                style_map = {
-                    "chime": winsound.MB_OK,
-                    "asterisk": winsound.MB_ICONASTERISK,
-                    "exclamation": winsound.MB_ICONEXCLAMATION,
-                }
-                winsound.MessageBeep(style_map.get(sound, winsound.MB_OK))
-    except Exception:
-        pass  # Not on Windows or no sound device — skip silently
-
-    # 2. Log to MCP server logger (appears in MCP output channel)
-    icon = {"research": "\U0001f50d", "prototype": "\U0001f6e0"}.get(
-        result.action_type, "\U0001f4cb"
+    """Log a finding: resolve the configured sound and delegate to the notifier."""
+    sound = (
+        _config.notifications.sound
+        if _config and getattr(_config, "notifications", None)
+        else "chime"
     )
-    logger.info(
-        "%s FINDING [%s]: %s", icon, result.action_type, result.question[:80]
-    )
-
-    # 3. Append to alerts file (audit trail)
-    try:
-        alerts_dir = Path.home() / ".sidekick" / "live"
-        alerts_dir.mkdir(parents=True, exist_ok=True)
-        alerts_path = alerts_dir / "alerts.jsonl"
-
-        alert = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "type": result.action_type,
-            "summary": result.question[:120],
-            "confidence": getattr(result, "confidence", "medium"),
-            "priority": getattr(result, "priority", "medium"),
-        }
-        with open(alerts_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(alert) + "\n")
-    except Exception:
-        logger.debug("Failed to write alert file", exc_info=True)
+    notifier.notify(result, sound=sound)
 
 
 def _get_unseen_findings() -> str:
