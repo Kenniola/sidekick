@@ -161,6 +161,7 @@ _DEFAULT_MODEL_CHAINS: dict[str, list[str]] = {
         "github_models:gpt-4.1-mini",
     ],
     "deep": [
+        "copilot:claude-opus-4.8",
         "copilot:claude-opus-4.7",
         "copilot:claude-opus-4.6",
         "copilot:gpt-4.1",
