@@ -147,6 +147,89 @@ class SpeechConfig:
     compute_type: str = "int8"       # int8 | int8_float16 | float16 | float32
 
 
+# Canonical default model fallback chains, shared with llm._TIER_CONFIG.
+# Each entry is a "provider:model" string; providers are resolved by llm.py
+# (currently "copilot" and "github_models").
+_DEFAULT_MODEL_CHAINS: dict[str, list[str]] = {
+    "fast": [
+        "copilot:gpt-4o-mini",
+        "github_models:gpt-4.1-mini",
+    ],
+    "standard": [
+        "copilot:claude-sonnet-4.5",
+        "copilot:gpt-4.1",
+        "github_models:gpt-4.1-mini",
+    ],
+    "deep": [
+        "copilot:claude-opus-4.7",
+        "copilot:claude-opus-4.6",
+        "copilot:gpt-4.1",
+        "github_models:DeepSeek-R1",
+    ],
+}
+
+
+def _parse_model_chain(entries: list[str]) -> list[tuple[str, str]]:
+    """Parse ``["provider:model", …]`` into ``[(provider, model), …]``.
+
+    Entries without a ``:`` separator are assumed to target the ``copilot``
+    provider. Blank entries are skipped.
+    """
+    parsed: list[tuple[str, str]] = []
+    for entry in entries:
+        item = (entry or "").strip()
+        if not item:
+            continue
+        if ":" in item:
+            provider, model = item.split(":", 1)
+            parsed.append((provider.strip(), model.strip()))
+        else:
+            parsed.append(("copilot", item))
+    return parsed
+
+
+@dataclass
+class ModelsConfig:
+    """Per-tier LLM model fallback chains (global, not per-customer).
+
+    Each tier is an ordered list of ``"provider:model"`` strings. The first
+    entry is tried first; subsequent entries are fallbacks. Defaults mirror the
+    code defaults in ``llm._TIER_CONFIG``.
+
+    An environment variable ``SIDEKICK_MODEL_<TIER>`` (e.g.
+    ``SIDEKICK_MODEL_DEEP="copilot:claude-opus-4.8,copilot:gpt-4.1"``) overrides
+    the configured list for that tier at resolution time — handy for a quick
+    swap without editing YAML.
+    """
+
+    fast: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_MODEL_CHAINS["fast"])
+    )
+    standard: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_MODEL_CHAINS["standard"])
+    )
+    deep: list[str] = field(
+        default_factory=lambda: list(_DEFAULT_MODEL_CHAINS["deep"])
+    )
+
+    def chain(self, tier: str) -> list[tuple[str, str]]:
+        """Resolve a tier to a ``[(provider, model), …]`` fallback chain.
+
+        Resolution order: ``SIDEKICK_MODEL_<TIER>`` env var (comma-separated)
+        → the configured list for the tier → the ``standard`` list.
+        """
+        env_override = os.environ.get(f"SIDEKICK_MODEL_{tier.upper()}", "").strip()
+        if env_override:
+            chain = _parse_model_chain(env_override.split(","))
+            if chain:
+                return chain
+
+        entries = getattr(self, tier, None)
+        if not entries:
+            entries = self.standard
+        return _parse_model_chain(entries)
+
+
 @dataclass
 class SidekickConfig:
     customer: str = "General"
@@ -164,6 +247,7 @@ class SidekickConfig:
     output: OutputConfig = field(default_factory=OutputConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
     speech: SpeechConfig = field(default_factory=SpeechConfig)
+    models: ModelsConfig = field(default_factory=ModelsConfig)
     rules: list[str] = field(default_factory=list)
 
 
@@ -312,6 +396,7 @@ def _parse_config(raw: dict) -> SidekickConfig:
     output_raw = raw.get("output", {})
     notifications_raw = raw.get("notifications", {})
     speech_raw = raw.get("speech", {})
+    models_raw = raw.get("models", {})
 
     # Resolve consultant names: flat key > nested participants
     consultant = raw.get("consultant") or participants.get("consultant", [])
@@ -388,6 +473,11 @@ def _parse_config(raw: dict) -> SidekickConfig:
                 or os.environ.get("SIDEKICK_WHISPER_MODEL", "small.en"),
             compute_type=speech_raw.get("compute_type", "int8")
                 or os.environ.get("SIDEKICK_WHISPER_COMPUTE", "int8"),
+        ),
+        models=ModelsConfig(
+            fast=models_raw.get("fast") or list(_DEFAULT_MODEL_CHAINS["fast"]),
+            standard=models_raw.get("standard") or list(_DEFAULT_MODEL_CHAINS["standard"]),
+            deep=models_raw.get("deep") or list(_DEFAULT_MODEL_CHAINS["deep"]),
         ),
         rules=raw.get("rules", []),
     )

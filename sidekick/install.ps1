@@ -81,8 +81,14 @@ if (-not $ghCmd) {
 }
 
 # --- Step 3: Install sidekick via uv tool ---
-# TODO: Replace with actual repo URL or PyPI name when decided
-$RepoUrl = "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick"
+# Distribution: private Git repo (team read access required). Install needs an
+# authenticated `git` (the GitHub CLI auth above covers HTTPS via the credential
+# helper). Override with the SIDEKICK_REPO_URL env var if the repo location moves.
+$RepoUrl = if ($env:SIDEKICK_REPO_URL) {
+    $env:SIDEKICK_REPO_URL
+} else {
+    "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick"
+}
 
 Write-Host "Installing sidekick-copilot[$Features]..."
 $installPkg = "sidekick-copilot[$Features] @ $RepoUrl"

@@ -69,6 +69,25 @@ speech:
   model: small.en                      # base.en | small.en | medium.en | large-v3
   compute_type: int8                   # int8 | int8_float16 | float16 | float32
 
+# LLM model fallback chains per tier (global — not per-customer).
+# Each entry is "provider:model"; the first is tried first, the rest are
+# fallbacks. Providers: copilot (Copilot API) | github_models (GitHub Models).
+# Quick override without editing this file: set SIDEKICK_MODEL_<TIER>, e.g.
+#   SIDEKICK_MODEL_DEEP="copilot:claude-opus-4.8,copilot:gpt-4.1"
+models:
+  fast:                                # classifier, quick decisions
+    - copilot:gpt-4o-mini
+    - github_models:gpt-4.1-mini
+  standard:                            # research, synthesis, suggest
+    - copilot:claude-sonnet-4.5
+    - copilot:gpt-4.1
+    - github_models:gpt-4.1-mini
+  deep:                                # complex research, prototypes
+    - copilot:claude-opus-4.7
+    - copilot:claude-opus-4.6
+    - copilot:gpt-4.1
+    - github_models:DeepSeek-R1
+
 rules:
   - Always distinguish GA vs Preview features
   - Cite sources for every claim

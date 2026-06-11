@@ -42,6 +42,19 @@ from sidekick.output.session_log import SessionLog
 
 logger = logging.getLogger("sidekick")
 
+# Install source for sidekick-copilot. Distribution is a private Git repo
+# (decision: keep in Git, not public). Override with SIDEKICK_REPO_URL.
+_REPO_URL = os.environ.get(
+    "SIDEKICK_REPO_URL",
+    "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick",
+)
+
+
+def _install_hint(extras: str = "live") -> str:
+    """Return the `uv tool install` command for the given extras."""
+    return f'uv tool install "sidekick-copilot[{extras}] @ {_REPO_URL}" --force'
+
+
 # ---------------------------------------------------------------------------
 # Global state (lives for the lifetime of the MCP server process)
 # ---------------------------------------------------------------------------
@@ -109,6 +122,11 @@ def _init_session(config_name: str = "default"):
     _session_log = SessionLog(config=_config)
     _research = ResearchPipeline(config=_config)
     _prototype = PrototypePipeline(config=_config)
+
+    # Register the resolved model chains so every call_llm(tier=…) honours the
+    # configured models (YAML + SIDEKICK_MODEL_<TIER> env overrides).
+    from sidekick import llm as _llm
+    _llm.set_active_models(_config.models)
 
 
 # ---------------------------------------------------------------------------
@@ -635,8 +653,8 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
     """Start capturing system audio and transcribing in real-time.
 
     Captures audio from your default speakers/headset via WASAPI loopback
-    and runs the full analysis pipeline. Speech backend (Whisper or Azure)
-    is configured in the customer YAML config.
+    and runs the full analysis pipeline. Transcription uses local Whisper
+    (configured in the customer YAML config).
 
     The first call (without confirmed=True) returns a consent notice.
     The agent should present this to the user and only proceed by calling
@@ -674,16 +692,12 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
         return (
             f"Missing live dependencies: {e}\n"
             f"Reinstall with live extras: "
-            f"uv tool install \"sidekick-copilot[live] @ git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick\" --force"
+            f"{_install_hint('live')}"
         )
 
     _init_session(config)
 
-    backend_label = (
-        f"Azure Speech ({_config.speech.azure_region})"
-        if _config.speech.backend == "azure"
-        else "Whisper (local)"
-    )
+    backend_label = "Whisper (local)"
 
     # Enumerate loopback devices (pyaudiowpatch is pre-imported at module
     # level to avoid import-lock deadlock).
@@ -704,6 +718,11 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
     # Start the background loop — model loading and audio capture happen
     # there so this tool returns instantly.
     _listen_task = asyncio.create_task(_run_listen_loop())
+
+    # Best-effort pre-warm of the primary LLM connection so the first
+    # classifier/research call doesn't pay DNS + TLS setup cost.
+    from sidekick import llm as _llm
+    asyncio.create_task(_llm.prewarm())
 
     domains = " \u00b7 ".join(_config.domains)
     devices_str = " \u00b7 ".join(device_names)
@@ -1040,12 +1059,7 @@ async def status() -> str:
 
     # Session header
     if _audio_capture and _audio_capture.is_capturing:
-        backend = (
-            f"Azure Speech ({_config.speech.azure_region})"
-            if _config and _config.speech.backend == "azure"
-            else "Whisper"
-        )
-        mode_label = f"🎙️ live ({backend})"
+        mode_label = "🎙️ live (Whisper)"
     else:
         mode_label = "session active"
 

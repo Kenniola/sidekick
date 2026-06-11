@@ -4,6 +4,30 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Config-driven LLM models** — per-tier model fallback chains are now defined in `configs/default.yaml` under a new `models:` block (`fast` / `standard` / `deep`, each an ordered list of `"provider:model"` strings) instead of being hard-coded in `llm.py`. A new `ModelsConfig` dataclass resolves them, and `set_active_models()` registers the active config so every `call_llm(tier=…)` call honours it without threading config through each call site.
+  - **Env override:** `SIDEKICK_MODEL_<TIER>` (e.g. `SIDEKICK_MODEL_DEEP="copilot:claude-opus-4.8,copilot:gpt-4.1"`) swaps a tier's chain at runtime with no YAML edit.
+  - **`sidekick models [profile]`** CLI command prints the resolved chain per tier (showing primary vs fallback and any active env override).
+  - `call_llm()` gains an optional `chain` parameter for explicit overrides (used by tests). Code defaults in `llm._TIER_CONFIG` are preserved as the standalone fallback. `tests/test_models_config.py` covers parsing, defaults, env override, YAML override, and `call_llm` integration.
+  - **Note:** both providers (`copilot`, `github_models`) assume an OpenAI-compatible `/chat/completions` shape. Genuinely different APIs (Anthropic-native, Azure OpenAI) would need a per-provider adapter — not yet implemented.
+
+### Changed
+
+- **`install.ps1`** package source is no longer a `TODO` — it defaults to the private Git repo and honours a `SIDEKICK_REPO_URL` env override. The same URL is centralised in `server.py` as `_REPO_URL` / `_install_hint()` so the install hint and installer stay in sync.
+
+### Fixed
+
+- **Removed stale Azure Speech branches** left over from the v0.3.0 removal: the `listen` banner and `status` tool referenced `_config.speech.azure_region` (no longer a field) behind a now-unreachable `backend == "azure"` guard, and the `listen` docstring still said "Whisper or Azure". Backend label is now simply "Whisper (local)".
+
+### Performance
+
+- **LLM connection pre-warm** — `listen` now kicks off a best-effort `llm.prewarm()` task that acquires the GitHub token and opens a pooled TLS connection to the Copilot host, so the first classifier/research call skips DNS + TCP + TLS setup. All failures are swallowed.
+
+---
+
 ## [0.3.0] — 2026-06-10
 
 ### Removed

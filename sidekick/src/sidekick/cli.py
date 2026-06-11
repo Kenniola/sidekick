@@ -317,6 +317,45 @@ def _cmd_list_configs():
     print(f"\nUsage: @sidekick listen --config <profile>")
 
 
+def _cmd_models():
+    """Print the resolved per-tier model fallback chains.
+
+    Usage: sidekick models [profile]
+
+    Shows the chain call_llm uses for each tier after applying YAML config
+    and any SIDEKICK_MODEL_<TIER> environment overrides.
+    """
+    import os
+    from sidekick.config import load_config
+
+    profile = "default"
+    # First positional arg after "models" that isn't a flag
+    for a in sys.argv[2:]:
+        if not a.startswith("-"):
+            profile = a
+            break
+
+    try:
+        config = load_config(profile)
+    except FileNotFoundError as e:
+        print(str(e))
+        sys.exit(1)
+
+    print(f"Resolved model chains (profile: {profile})\n")
+    for tier in ("fast", "standard", "deep"):
+        env_key = f"SIDEKICK_MODEL_{tier.upper()}"
+        overridden = bool(os.environ.get(env_key, "").strip())
+        chain = config.models.chain(tier)
+        suffix = f"  [overridden by {env_key}]" if overridden else ""
+        print(f"  {tier:9}{suffix}")
+        for i, (provider, model) in enumerate(chain):
+            marker = "primary " if i == 0 else "fallback"
+            print(f"    {marker}  {provider}:{model}")
+        print()
+    print("Override a tier without editing YAML, e.g.:")
+    print('  $env:SIDEKICK_MODEL_DEEP = "copilot:claude-opus-4.8,copilot:gpt-4.1"')
+
+
 def _cmd_uninstall():
     """Remove all sidekick artifacts from the system."""
     user_dir = _get_user_dir()
@@ -448,6 +487,7 @@ def main():
         print("  sidekick init          Scaffold ~/.sidekick/ and register in VS Code")
         print("  sidekick serve         Run the MCP server (used by mcp.json)")
         print("  sidekick list-configs  Show available customer profiles")
+        print("  sidekick models        Show resolved per-tier model chains")
         print("  sidekick uninstall     Remove all sidekick artifacts")
         print("  sidekick help          Show this help message")
         return
@@ -459,6 +499,8 @@ def main():
         _cmd_serve()
     elif command == "list-configs":
         _cmd_list_configs()
+    elif command == "models":
+        _cmd_models()
     elif command == "uninstall":
         _cmd_uninstall()
     else:

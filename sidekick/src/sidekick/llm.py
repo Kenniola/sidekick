@@ -20,8 +20,12 @@ import asyncio
 import logging
 import os
 import time
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from sidekick.config import ModelsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +39,10 @@ _COPILOT_URL = "https://api.githubcopilot.com/chat/completions"
 # GitHub Models (fallback) — free tier with gh token
 _GITHUB_MODELS_URL = "https://models.inference.ai.azure.com/chat/completions"
 
-# Tier → (provider, model) fallback chains
+# Tier → (provider, model) fallback chains.
+# These are the built-in code defaults used when no explicit chain is passed
+# to call_llm (e.g. by tests or the vision path). The user-facing source of
+# truth is config.ModelsConfig / configs/default.yaml — keep the two in sync.
 _TIER_CONFIG: dict[str, list[tuple[str, str]]] = {
     "fast": [
         ("copilot", "gpt-4o-mini"),
@@ -57,6 +64,18 @@ _TIER_CONFIG: dict[str, list[tuple[str, str]]] = {
 # Retry settings
 _MAX_RETRIES = 3
 _BACKOFF_BASE = 1.0  # seconds: 1, 2, 4
+
+# Active per-tier model config, registered at session init via
+# set_active_models(). When set, call_llm resolves tier → chain from it
+# (honouring YAML config + SIDEKICK_MODEL_<TIER> env overrides). When unset
+# (tests, standalone use), call_llm falls back to _TIER_CONFIG.
+_active_models: "ModelsConfig | None" = None
+
+
+def set_active_models(models: "ModelsConfig | None") -> None:
+    """Register the active model config so call_llm resolves chains from it."""
+    global _active_models
+    _active_models = models
 
 # ---------------------------------------------------------------------------
 # GitHub token management (gh auth token, refreshed periodically)
@@ -141,6 +160,30 @@ def _get_github_models_client(timeout: float) -> httpx.AsyncClient:
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
     return _github_models_client
+
+
+async def prewarm() -> None:
+    """Best-effort warm-up of the primary LLM path.
+
+    Acquires the GitHub token (amortises the `gh auth token` subprocess cost)
+    and opens a pooled TLS connection to the Copilot host so the first real
+    call skips DNS + TCP + TLS setup. All failures are swallowed — this is a
+    latency optimisation, not a dependency.
+    """
+    try:
+        await _get_gh_token()
+    except Exception as e:  # noqa: BLE001 — best-effort only
+        logger.debug("prewarm: token acquisition skipped (%s)", e)
+        return
+
+    try:
+        client = _get_copilot_client(timeout=10.0)
+        # A GET to the host establishes the keep-alive connection that the
+        # POST /chat/completions call reuses. Status is irrelevant.
+        await client.get("https://api.githubcopilot.com/", timeout=10.0)
+        logger.debug("prewarm: Copilot connection established")
+    except Exception as e:  # noqa: BLE001 — best-effort only
+        logger.debug("prewarm: connection warm-up skipped (%s)", e)
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +277,7 @@ async def call_llm(
     json_output: bool = False,
     timeout: float = 60.0,
     tier: str = "standard",
+    chain: list[tuple[str, str]] | None = None,
 ) -> str:
     """Call an LLM with automatic tier routing, retry, and fallback.
 
@@ -252,12 +296,20 @@ async def call_llm(
         user_prompt: User-level prompt (the task to perform).
         json_output: If True, request JSON response format.
         timeout: Request timeout in seconds.
-        tier: 'fast', 'standard', or 'deep'.
+        tier: 'fast', 'standard', or 'deep'. Used to pick the built-in
+            fallback chain when *chain* is not supplied.
+        chain: Explicit ``[(provider, model), …]`` fallback chain, typically
+            from ``config.models.chain(tier)``. Overrides *tier* when given,
+            letting models be configured in YAML / env without code changes.
 
     Returns:
         The LLM's response text.
     """
-    chain = _TIER_CONFIG.get(tier, _TIER_CONFIG["standard"])
+    if chain is None:
+        if _active_models is not None:
+            chain = _active_models.chain(tier)
+        else:
+            chain = _TIER_CONFIG.get(tier, _TIER_CONFIG["standard"])
     last_error: Exception | None = None
 
     for provider_name, model in chain:
