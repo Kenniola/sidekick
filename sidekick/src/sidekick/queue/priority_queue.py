@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from sidekick.analyst.classifier import ActionItem
 from sidekick.config import SidekickConfig
+from sidekick.dedup import find_duplicate
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ class PriorityQueue:
             return
 
         # Check for semantic duplicates against completed outputs
-        duplicate_of = await self._find_completed_duplicate(item)
+        duplicate_of = self._find_completed_duplicate(item)
         if duplicate_of:
             # Mark as a context-enrichment re-research
             item.question = (
@@ -150,48 +151,21 @@ class PriorityQueue:
                         return queued
         return None
 
-    async def _find_completed_duplicate(self, item: ActionItem) -> ActionResult | None:
-        """Check if this question is semantically similar to a recent completed output.
+    def _find_completed_duplicate(self, item: ActionItem) -> ActionResult | None:
+        """Return a recent completed output that is a near-duplicate of ``item``.
 
-        Uses a fast-tier LLM call to compare the new question against the last
-        10 completed outputs. Returns the matching ActionResult if >80% overlap,
-        or None if it's a genuinely new question.
+        Uses a deterministic local similarity check (no LLM round-trip) against
+        the last 10 completed questions. Returns the matching ActionResult when
+        similarity meets the threshold, else None.
         """
         if not self.completed:
             return None
 
         # Only check last 10 completed items
         recent = self.completed[-10:]
-        recent_questions = "\n".join(
-            f"  {i+1}. {r.question[:100]}" for i, r in enumerate(recent)
-        )
-
-        try:
-            from sidekick.llm import call_llm
-            result = await call_llm(
-                system_prompt=(
-                    "You compare a NEW question against a list of PREVIOUS questions "
-                    "to detect semantic duplicates. Return JSON with a single key "
-                    '"match_index" — the 1-based index of the most similar previous '
-                    "question if they ask essentially the same thing (>80% overlap), "
-                    "or 0 if the new question is genuinely different."
-                ),
-                user_prompt=(
-                    f"NEW: {item.question[:150]}\n\n"
-                    f"PREVIOUS:\n{recent_questions}"
-                ),
-                json_output=True,
-                tier="fast",
-                timeout=5,
-            )
-            from sidekick.llm import parse_llm_json
-            data = parse_llm_json(result)
-            match_idx = data.get("match_index", 0)
-            if isinstance(match_idx, int) and 1 <= match_idx <= len(recent):
-                return recent[match_idx - 1]
-        except Exception as e:
-            logger.debug("Dedup check failed: %s", e)
-
+        idx = find_duplicate(item.question, [r.question for r in recent])
+        if idx is not None:
+            return recent[idx]
         return None
 
     async def process_ready(
