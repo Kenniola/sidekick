@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 # Eng Hub search API — requires Microsoft corp auth (Entra ID)
 ENGHUB_SEARCH_URL = "https://eng.ms/api/search/v2"
 
+
+class EngHubAuthError(RuntimeError):
+    """Raised when eng.ms requires authentication sidekick doesn't have.
+
+    eng.ms is gated behind Entra ID. An unauthenticated request 302-redirects
+    to login.microsoftonline.com, whose sign-in page returns HTTP 200
+    text/html — so this condition must be detected explicitly rather than
+    mistaken for a successful API response.
+    """
+
 # Offering types and their short labels
 OFFERING_TYPES = {
     "poc": "Proof of Concept",
@@ -42,6 +52,9 @@ class EngHubOffering:
     offering_type: str = ""
     solution_play: str = ""
     relevance: str = ""
+    source: str = "live"        # provenance: "live" = eng.ms API. Set
+                                # explicitly so a consumer can never mistake
+                                # non-live data for authoritative results.
 
     def format_brief(self) -> str:
         type_label = OFFERING_TYPES.get(self.offering_type, self.offering_type.upper())
@@ -97,6 +110,9 @@ class EngHubPipeline:
 
         try:
             offerings = await self._search_enghub(search_query)
+        except EngHubAuthError as e:
+            logger.warning("Eng Hub auth required for '%s': %s", topic, e)
+            return EngHubResult(topic=topic, error=f"auth required — {e}")
         except Exception as e:
             logger.warning("Eng Hub search failed for '%s': %s", topic, e)
             return EngHubResult(topic=topic, error=str(e))
@@ -108,20 +124,52 @@ class EngHubPipeline:
         return EngHubResult(topic=topic, offerings=offerings[:8])
 
     async def _search_enghub(self, query: str) -> list[EngHubOffering]:
-        """Search the Eng Hub API and parse results into offerings."""
+        """Search the Eng Hub API and parse results into offerings.
+
+        Raises:
+            EngHubAuthError: if the request is redirected to the Entra sign-in
+                page, rejected as unauthenticated (401/403), or returns a
+                non-JSON body. eng.ms is SSO-gated, so without a corp token the
+                search cannot return data — and that must surface as a clear
+                auth failure rather than an empty or fabricated result.
+        """
         params = {"search": query, "$top": 15}
 
+        # follow_redirects=False so an Entra auth bounce is visible as a 3xx
+        # instead of being silently followed to the login page (which returns
+        # HTTP 200 text/html and would otherwise masquerade as success).
         resp = await self._client.get(
-            ENGHUB_SEARCH_URL, params=params, follow_redirects=True,
+            ENGHUB_SEARCH_URL, params=params, follow_redirects=False,
         )
 
-        if resp.status_code == 401 or resp.status_code == 403:
-            logger.info("Eng Hub API returned %s — auth required (corp net / Entra ID)", resp.status_code)
+        if resp.is_redirect:
+            location = resp.headers.get("location", "")
+            if "login.microsoftonline.com" in location or "signin-oidc" in location:
+                raise EngHubAuthError(
+                    "redirected to Entra sign-in "
+                    "(corp network / Entra ID token required)"
+                )
+            logger.warning("Eng Hub API redirected to %s", location[:120])
             return []
+
+        if resp.status_code in (401, 403):
+            raise EngHubAuthError(
+                f"API returned {resp.status_code} "
+                "(corp network / Entra ID token required)"
+            )
 
         if resp.status_code != 200:
             logger.warning("Eng Hub API returned %s", resp.status_code)
             return []
+
+        # A 200 alone is not enough — the unauthenticated sign-in page is also
+        # a 200. Require a JSON content-type before trusting the body.
+        content_type = resp.headers.get("content-type", "")
+        if "application/json" not in content_type.lower():
+            raise EngHubAuthError(
+                f"expected JSON, got '{content_type or 'unknown'}' "
+                "(likely an unauthenticated HTML response)"
+            )
 
         data = resp.json()
         offerings = []
@@ -135,6 +183,7 @@ class EngHubPipeline:
                 url=url,
                 offering_type=self._classify_offering_type(url, title),
                 solution_play=self._extract_solution_play(url),
+                source="live",
             ))
 
         return offerings
