@@ -40,6 +40,7 @@ from sidekick.output.session_log import SessionLog
 from sidekick.output import notifier
 from sidekick import grounding
 from sidekick import engine
+from sidekick.prompt_budget import clip
 
 logger = logging.getLogger("sidekick")
 
@@ -514,8 +515,13 @@ async def suggest_questions() -> str:
         f"[{getattr(line, 'start', '?')}] {getattr(line, 'speaker', '?')}: {getattr(line, 'text', str(line))}"
         for line in recent
     )
+    # Token-budget each block so a long meeting can't blow the deep model's
+    # context window or inflate latency. Keep the most recent transcript tail;
+    # keep the head of the (less time-sensitive) threads/research/grounding.
+    transcript_block = clip(transcript_block, 6000, keep="tail")
 
     threads_block = _state.context.format_threads()
+    threads_block = clip(threads_block, 2000, keep="head")
 
     research_block = "(none yet)"
     if _state.session_log and _state.session_log.outputs:
@@ -523,8 +529,10 @@ async def suggest_questions() -> str:
         for o in _state.session_log.outputs[-10:]:
             research_parts.append(f"[{o['action_type']}] {o['question']}: {o['answer'][:150]}")
         research_block = "\n".join(research_parts)
+    research_block = clip(research_block, 2500, keep="head")
 
     grounding_block = await _get_grounding_context_async()
+    grounding_block = clip(grounding_block, 4000, keep="head")
 
     prompt = CONSULTANT_ADVISOR_PROMPT.format(
         context_block=context_block,
