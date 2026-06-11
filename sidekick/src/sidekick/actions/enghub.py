@@ -11,23 +11,28 @@ get relevant results without needing hardcoded topic mappings.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
-# Eng Hub search API — requires Microsoft corp auth (Entra ID)
-ENGHUB_SEARCH_URL = "https://eng.ms/api/search/v2"
+# A search callable injected by the host. Given a query string it returns a
+# list of result records, each at minimum ``{"title": str, "url": str}`` (the
+# field map verified against live EngineeringHub results). The host supplies an
+# *authenticated* implementation (e.g. wrapping the EngineeringHub MCP server's
+# search tool); sidekick itself holds no eng.ms credentials and makes no eng.ms
+# HTTP calls.
+SearchFn = Callable[[str], Awaitable[list[dict]]]
 
 
 class EngHubAuthError(RuntimeError):
-    """Raised when eng.ms requires authentication sidekick doesn't have.
+    """Raised when no authenticated eng.ms search source is available.
 
-    eng.ms is gated behind Entra ID. An unauthenticated request 302-redirects
-    to login.microsoftonline.com, whose sign-in page returns HTTP 200
-    text/html — so this condition must be detected explicitly rather than
-    mistaken for a successful API response.
+    eng.ms is gated behind Entra ID and the sidekick server process has no way
+    to authenticate to it directly. Live offerings are therefore only available
+    when the host injects an authenticated search callable. When none is wired,
+    this error is raised so the absence of live data surfaces explicitly rather
+    than as an empty or fabricated result.
     """
 
 # Offering types and their short labels
@@ -82,17 +87,25 @@ class EngHubResult:
 
 
 class EngHubPipeline:
-    """Search Eng Hub Resource Center for relevant VBD/IP offerings.
+    """Surface relevant VBD/IP offerings from the Eng Hub Resource Center.
 
-    Queries the eng.ms search API directly (same API the Eng Hub MCP server
-    wraps). The search is unscoped — the API's own relevance ranking covers
-    all solution plays and offering types across the full Resource Center.
-
-    Requires Microsoft corp network / Entra ID authentication.
+    The sidekick server process cannot authenticate to eng.ms itself, so it
+    makes no eng.ms HTTP calls. Instead the host injects an authenticated
+    ``search_fn`` (typically wrapping the EngineeringHub MCP server's search
+    tool). When no ``search_fn`` is wired, searches return an auth-required
+    error rather than empty or fabricated data.
     """
 
-    def __init__(self) -> None:
-        self._client = httpx.AsyncClient(timeout=15.0)
+    def __init__(self, search_fn: SearchFn | None = None) -> None:
+        self._search_fn = search_fn
+
+    def set_search_fn(self, search_fn: SearchFn | None) -> None:
+        """Wire (or clear) the authenticated search callable.
+
+        Lets the host attach a search source to a module-level singleton after
+        import.
+        """
+        self._search_fn = search_fn
 
     async def search(self, topic: str, domains: list[str] | None = None) -> EngHubResult:
         """Search for VBD/IP offerings relevant to a topic.
@@ -124,57 +137,29 @@ class EngHubPipeline:
         return EngHubResult(topic=topic, offerings=offerings[:8])
 
     async def _search_enghub(self, query: str) -> list[EngHubOffering]:
-        """Search the Eng Hub API and parse results into offerings.
+        """Run the injected search and parse results into offerings.
+
+        The injected ``search_fn`` returns a list of records, each at minimum
+        ``{"title": str, "url": str}`` — the field map verified against live
+        EngineeringHub results. Offering type and solution play are inferred
+        from the URL/title since the source carries no such field.
 
         Raises:
-            EngHubAuthError: if the request is redirected to the Entra sign-in
-                page, rejected as unauthenticated (401/403), or returns a
-                non-JSON body. eng.ms is SSO-gated, so without a corp token the
-                search cannot return data — and that must surface as a clear
-                auth failure rather than an empty or fabricated result.
+            EngHubAuthError: if no authenticated ``search_fn`` is wired, so the
+                absence of live data surfaces explicitly rather than as an empty
+                or fabricated result.
         """
-        params = {"search": query, "$top": 15}
-
-        # follow_redirects=False so an Entra auth bounce is visible as a 3xx
-        # instead of being silently followed to the login page (which returns
-        # HTTP 200 text/html and would otherwise masquerade as success).
-        resp = await self._client.get(
-            ENGHUB_SEARCH_URL, params=params, follow_redirects=False,
-        )
-
-        if resp.is_redirect:
-            location = resp.headers.get("location", "")
-            if "login.microsoftonline.com" in location or "signin-oidc" in location:
-                raise EngHubAuthError(
-                    "redirected to Entra sign-in "
-                    "(corp network / Entra ID token required)"
-                )
-            logger.warning("Eng Hub API redirected to %s", location[:120])
-            return []
-
-        if resp.status_code in (401, 403):
+        if self._search_fn is None:
             raise EngHubAuthError(
-                f"API returned {resp.status_code} "
-                "(corp network / Entra ID token required)"
+                "no authenticated eng.ms search source wired — the host must "
+                "inject a search callable (e.g. via the EngineeringHub MCP)"
             )
 
-        if resp.status_code != 200:
-            logger.warning("Eng Hub API returned %s", resp.status_code)
-            return []
+        records = await self._search_fn(query)
 
-        # A 200 alone is not enough — the unauthenticated sign-in page is also
-        # a 200. Require a JSON content-type before trusting the body.
-        content_type = resp.headers.get("content-type", "")
-        if "application/json" not in content_type.lower():
-            raise EngHubAuthError(
-                f"expected JSON, got '{content_type or 'unknown'}' "
-                "(likely an unauthenticated HTML response)"
-            )
-
-        data = resp.json()
         offerings = []
-        for item in data.get("value", data.get("results", [])):
-            title = item.get("title", item.get("name", ""))
+        for item in records:
+            title = item.get("title", "")
             url = item.get("url", "")
             if not title or not url:
                 continue
@@ -190,7 +175,12 @@ class EngHubPipeline:
 
     @staticmethod
     def _classify_offering_type(url: str, title: str) -> str:
-        """Classify the offering type from URL path segments or title."""
+        """Classify the offering type from URL path segments or title.
+
+        URL/title tokens were verified against live EngineeringHub results,
+        e.g. ``/wsplus/`` and ``workshopplus-`` (WorkshopPLUS), ``learningpath``
+        (learning path) and ``deliveryguide`` (delivery guide).
+        """
         url_lower = url.lower()
         title_lower = title.lower()
 
@@ -200,9 +190,12 @@ class EngHubPipeline:
             if OFFERING_TYPES[code].lower() in title_lower:
                 return code
 
-        if "workshop" in title_lower:
+        # URL/title tokens that don't map to an OFFERING_TYPES code directly.
+        if "wsplus" in url_lower or "workshopplus" in url_lower or "workshop" in title_lower:
             return "wsplus"
-        if "delivery guide" in title_lower:
+        if "learningpath" in url_lower or "learning path" in title_lower:
+            return "arp"
+        if "deliveryguide" in url_lower or "delivery guide" in title_lower:
             return "so"
         return ""
 

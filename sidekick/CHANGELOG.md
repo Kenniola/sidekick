@@ -14,6 +14,9 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Changed
 
+- **Eng Hub offerings now use a host-injected authenticated search** instead of sidekick calling eng.ms directly. `EngHubPipeline` accepts an injected `search_fn` (and exposes `set_search_fn`) supplied by the host — typically wrapping the authenticated EngineeringHub MCP server. The sidekick process holds no eng.ms credentials and makes no eng.ms HTTP calls.
+  - **Rationale:** eng.ms is Entra-gated and the server process cannot authenticate to it; the previous unauthenticated `httpx` call to a guessed `https://eng.ms/api/search/v2` endpoint never returned live data. When no `search_fn` is wired, searches now return an explicit *auth-required* error rather than empty or fabricated results.
+  - Offering-type/solution-play inference (`/wsplus/`, `workshopplus-`, `learningpath`, `deliveryguide`, `/sp03/`, etc.) validated against live EngineeringHub results.
 - **Default Whisper model upgraded from `base.en` to `small.en`** (~150MB → ~470MB, WER ~8-10% → ~5-7%). Real-world transcripts of a 72-minute consulting call showed `base.en` produced visible misrecognitions on technical jargon (Fabric, OneLake, capacity SKUs); `small.en` resolves these.
 - **`SpeechRecogniser` Protocol now accepts a `chunk_start_offset: float = 0.0` parameter** so segment timestamps are session-relative (`HH:MM:SS.mmm` reflecting position within the meeting) rather than chunk-relative (always in `[0, 5s]`).
 - **`server.py` listen loop now tracks `listen_started_at`** and computes `chunk_start_offset = max(0, time.monotonic() - listen_started_at - chunk_duration)` for every transcription call.

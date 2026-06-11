@@ -1,115 +1,111 @@
-"""Regression tests for Eng Hub auth-failure visibility (bug: silent fallback).
+"""Regression tests for the Eng Hub offerings pipeline (auth-failure visibility).
 
-These tests assert the v0.3.x behavioural contract:
-  * An Entra sign-in redirect is reported as an auth failure (never success).
-  * A 200 response with a non-JSON (HTML sign-in) body is an auth failure,
-    not a parsed-but-empty result.
-  * A genuine 200 JSON response yields offerings tagged ``source="live"``.
+These tests assert the v0.3.x behavioural contract after the Option A refactor,
+where sidekick no longer calls eng.ms directly but instead consumes an
+authenticated ``search_fn`` injected by the host:
 
-The eng.ms HTTP call is stubbed with ``httpx.MockTransport`` so nothing
-touches the network.
+  * With no ``search_fn`` wired, a search reports an auth failure (never an
+    empty success and never fabricated data).
+  * An injected search returning live records yields offerings tagged
+    ``source="live"`` with type/solution-play inferred from the URL.
+  * Records missing a title or url are skipped.
+  * A failure raised by the injected search surfaces as an error result,
+    tolerating the flaky upstream backend.
+
+Nothing here touches the network — the search source is a plain callable.
 """
 
 from __future__ import annotations
 
-import httpx
 import pytest
 
 from sidekick.actions.enghub import EngHubAuthError, EngHubPipeline
 
 
-def _pipeline_with_handler(handler) -> EngHubPipeline:
-    """Build a pipeline whose client routes through a mock transport."""
-    pipeline = EngHubPipeline()
-    pipeline._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return pipeline
-
-
-class TestAuthRedirectDetected:
+class TestNoSourceWired:
     @pytest.mark.asyncio
-    async def test_login_redirect_surfaces_as_auth_error_result(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                302,
-                headers={
-                    "location": (
-                        "https://login.microsoftonline.com/common/oauth2/"
-                        "v2.0/authorize?client_id=91c02195-fbbd-4bc8-8c69-"
-                        "5b75dadc5672&redirect_uri=https%3A%2F%2Feng.ms%2F"
-                        "signin-oidc"
-                    )
-                },
-            )
-
-        pipeline = _pipeline_with_handler(handler)
+    async def test_search_without_source_surfaces_as_auth_error(self):
+        pipeline = EngHubPipeline()  # no search_fn injected
         result = await pipeline.search("Microsoft Fabric")
         assert result.offerings == []
         assert "auth required" in result.error.lower()
 
     @pytest.mark.asyncio
-    async def test_raw_search_raises_auth_error_on_redirect(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                302, headers={"location": "https://eng.ms/signin-oidc?code=x"}
-            )
-
-        pipeline = _pipeline_with_handler(handler)
+    async def test_raw_search_raises_auth_error_without_source(self):
+        pipeline = EngHubPipeline()
         with pytest.raises(EngHubAuthError):
             await pipeline._search_enghub("Fabric")
 
 
-class TestHtmlMasqueradeDetected:
-    @pytest.mark.asyncio
-    async def test_200_html_login_page_is_auth_error_not_success(self):
-        """The sign-in page returns HTTP 200 text/html — must not be trusted."""
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                headers={"content-type": "text/html; charset=utf-8"},
-                text="<html><title>Sign in to your account</title></html>",
-            )
-
-        pipeline = _pipeline_with_handler(handler)
-        result = await pipeline.search("Microsoft Fabric")
-        assert result.offerings == []
-        assert "auth required" in result.error.lower()
-
-
 class TestLiveResultsTagged:
     @pytest.mark.asyncio
-    async def test_valid_json_yields_live_tagged_offerings(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(
-                200,
-                headers={"content-type": "application/json"},
-                json={
-                    "value": [
-                        {
-                            "title": "Fabric PoC — Data Prep",
-                            "url": "https://eng.ms/.../sp03/03-microsoftfabric/poc/dataprep",
-                        },
-                        {
-                            "title": "Database Migration — ADR",
-                            "url": "https://eng.ms/.../sp03/01-databases/adr",
-                        },
-                    ]
+    async def test_injected_search_yields_live_tagged_offerings(self):
+        async def search_fn(query: str) -> list[dict]:
+            return [
+                {
+                    "title": "Fabric PoC — Data Prep",
+                    "url": "https://eng.ms/.../sp03/03-microsoftfabric/poc/dataprep",
+                    "contentId": "abc-123",
                 },
-            )
+                {
+                    "title": "Database Migration — ADR",
+                    "url": "https://eng.ms/.../sp01/01-databases/adr",
+                    "contentId": "def-456",
+                },
+            ]
 
-        pipeline = _pipeline_with_handler(handler)
+        pipeline = EngHubPipeline(search_fn=search_fn)
         result = await pipeline.search("Microsoft Fabric")
         assert result.error == ""
         assert len(result.offerings) == 2
         assert all(o.source == "live" for o in result.offerings)
-        # ADR sorts after PoC by type priority
+        # PoC sorts before ADR by type priority.
         assert result.offerings[0].offering_type == "poc"
+        # Solution play is inferred from the URL path.
+        assert result.offerings[0].solution_play.startswith("SP03")
 
     @pytest.mark.asyncio
-    async def test_non_200_returns_empty_without_error(self):
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(500, text="server error")
+    async def test_set_search_fn_wires_source_after_construction(self):
+        async def search_fn(query: str) -> list[dict]:
+            return [
+                {
+                    "title": "WorkshopPLUS Microsoft Fabric",
+                    "url": (
+                        "https://eng.ms/.../azure-engagement-resource-center/"
+                        "sp03/03-microsoftfabric/wsplus/index"
+                    ),
+                }
+            ]
 
-        pipeline = _pipeline_with_handler(handler)
+        pipeline = EngHubPipeline()
+        pipeline.set_search_fn(search_fn)
+        result = await pipeline.search("Fabric workshop")
+        assert result.error == ""
+        assert len(result.offerings) == 1
+        assert result.offerings[0].offering_type == "wsplus"
+
+    @pytest.mark.asyncio
+    async def test_records_missing_title_or_url_are_skipped(self):
+        async def search_fn(query: str) -> list[dict]:
+            return [
+                {"title": "", "url": "https://eng.ms/x"},
+                {"title": "No URL", "url": ""},
+                {"title": "Good", "url": "https://eng.ms/.../sp03/poc/good"},
+            ]
+
+        pipeline = EngHubPipeline(search_fn=search_fn)
+        result = await pipeline.search("Fabric")
+        assert len(result.offerings) == 1
+        assert result.offerings[0].title == "Good"
+
+
+class TestSearchFailureTolerated:
+    @pytest.mark.asyncio
+    async def test_injected_search_failure_returns_error_result(self):
+        async def search_fn(query: str) -> list[dict]:
+            raise ValueError("The input does not contain any JSON tokens.")
+
+        pipeline = EngHubPipeline(search_fn=search_fn)
         result = await pipeline.search("Fabric")
         assert result.offerings == []
-        assert result.error == ""
+        assert result.error != ""
