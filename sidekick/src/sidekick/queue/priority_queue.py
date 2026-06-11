@@ -184,8 +184,8 @@ class PriorityQueue:
                 tier="fast",
                 timeout=5,
             )
-            import json
-            data = json.loads(result.strip().strip("`").lstrip("json\n"))
+            from sidekick.llm import parse_llm_json
+            data = parse_llm_json(result)
             match_idx = data.get("match_index", 0)
             if isinstance(match_idx, int) and 1 <= match_idx <= len(recent):
                 return recent[match_idx - 1]

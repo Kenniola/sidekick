@@ -17,6 +17,7 @@ Auth:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -28,6 +29,45 @@ if TYPE_CHECKING:
     from sidekick.config import ModelsConfig
 
 logger = logging.getLogger(__name__)
+
+
+def parse_llm_json(text: str):
+    """Parse a JSON value from an LLM response, tolerating markdown fences.
+
+    Models inconsistently wrap JSON. This unifies the handling previously
+    duplicated across classifier, priority_queue, and server, accepting:
+
+      - a bare object/array:           ``{"a": 1}``
+      - a fenced block:                ``` ```json\\n{...}\\n``` ```
+      - a bare fence:                  ``` ```\\n{...}\\n``` ```
+      - leading/trailing whitespace
+      - a stray ``json`` language tag: ``json\\n{...}``
+
+    Returns the parsed value (typically a ``dict``). Raises
+    ``json.JSONDecodeError`` if the cleaned text is not valid JSON.
+    """
+    cleaned = text.strip()
+
+    # Strip a leading code fence (```json or ```), dropping the fence line.
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
+
+    # Strip a trailing code fence.
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+
+    cleaned = cleaned.strip()
+
+    # Some models still prefix the body with a bare "json" tag. Only strip it
+    # when the remainder actually starts a JSON value, so legitimate content
+    # is never corrupted (top-level JSON always starts with { or [).
+    if cleaned[:4].lower() == "json":
+        candidate = cleaned[4:].lstrip()
+        if candidate[:1] in ("{", "["):
+            cleaned = candidate
+
+    return json.loads(cleaned)
+
 
 # ---------------------------------------------------------------------------
 # Endpoints

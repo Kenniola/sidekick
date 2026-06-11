@@ -321,7 +321,7 @@ async def _detect_domains() -> None:
     if len(transcript_sample) < 10:
         return
 
-    from sidekick.llm import call_llm
+    from sidekick.llm import call_llm, parse_llm_json
     sample_text = "\n".join(
         f"{getattr(l, 'speaker', '?')}: {getattr(l, 'text', str(l))}"
         for l in transcript_sample
@@ -343,8 +343,7 @@ async def _detect_domains() -> None:
             tier="fast",
             timeout=8,
         )
-        import json
-        data = json.loads(result.strip().strip("`").lstrip("json\n"))
+        data = parse_llm_json(result)
         detected = data.get("domains", [])
         if detected:
             # Merge with configured domains (no duplicates)
@@ -759,7 +758,7 @@ async def suggest_questions() -> str:
         return "Not enough transcript yet \u2014 need a few exchanges first."
 
     from sidekick.analyst.prompts import CONSULTANT_ADVISOR_PROMPT
-    from sidekick.llm import call_llm
+    from sidekick.llm import call_llm, parse_llm_json
 
     # Build a rich context block with key facts and open questions
     key_facts_str = ""
@@ -822,13 +821,7 @@ async def suggest_questions() -> str:
             tier="deep",
         )
 
-        cleaned = response_text.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].rstrip()
-
-        data = json.loads(cleaned)
+        data = parse_llm_json(response_text)
     except Exception as e:
         logger.exception("suggest_questions LLM call failed")
         return f"Failed to generate suggestions: {type(e).__name__}: {e}"

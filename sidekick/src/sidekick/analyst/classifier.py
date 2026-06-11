@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field, fields
 
 from sidekick.analyst.context import MeetingContext
 from sidekick.analyst.prompts import ANALYST_SYSTEM_PROMPT
 from sidekick.config import SidekickConfig
-from sidekick.llm import call_llm
+from sidekick.llm import call_llm, parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +47,7 @@ class AnalystResponse:
 
     @classmethod
     def from_json(cls, text: str) -> AnalystResponse:
-        # Strip markdown fences the LLM sometimes wraps around JSON
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            # Remove opening fence (```json or ```)
-            cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].rstrip()
-
-        data = json.loads(cleaned)
+        data = parse_llm_json(text)
 
         # Build ActionItems, filtering out any unexpected keys from the LLM
         items = []
