@@ -18,6 +18,13 @@ All notable changes to sidekick-copilot are documented in this file.
 
 - **`install.ps1`** package source is no longer a `TODO` — it defaults to the private Git repo and honours a `SIDEKICK_REPO_URL` env override. The same URL is centralised in `server.py` as `_REPO_URL` / `_install_hint()` so the install hint and installer stay in sync.
 
+- **Phase 2 — `server.py` consolidation (behaviour-preserving refactor).** The ~1,140-line `server.py` was decomposed into focused, unit-tested modules. Each slice was committed separately with characterization tests written *before* the extraction (test-first), so the structural moves are verifiably regression-free. Test count grew from 48 → 109.
+  - **`parse_llm_json` (2a)** — a single tolerant JSON parser (bare object/array, ```` ```json ```` fences, stray `json` tag, surrounding whitespace) now lives in `llm.py` and replaces four divergent ad-hoc parsers across `server.py`, `classifier.py`, and `priority_queue.py`. (`tests/test_parse_llm_json.py`)
+  - **`output/notifier.py` (2b)** — the audible-alert + `alerts.jsonl` audit logic moved out of `server._notify` into a testable module (`play_sound` / `write_alert` / `notify`); `server._notify` is now a thin wrapper resolving the configured sound. (`tests/test_notifier.py`)
+  - **`grounding.py` (2c)** — the ~130-line grounding-context file I/O moved into a pure `build_grounding_context(config, context)` function. (`tests/test_grounding.py`)
+  - **`session_state.py` (2d)** — the ~15 module globals collapsed into a single `SessionState` dataclass whose attributes are mutated in place, removing every `global` statement; `_init_session` uses `SessionState.reset()`. (`tests/test_session_state.py`)
+  - **`engine.py` (2e, partial)** — `detect_domains` + `classify_and_dispatch` extracted, taking `SessionState` and a `notify` callable explicitly so they are testable with mocks. The live audio loop (`_run_listen_loop`) stays in `server.py` for now; its extraction is deferred to Phase 3 pending a live-loop test harness. (`tests/test_engine.py`)
+
 ### Fixed
 
 - **Removed stale Azure Speech branches** left over from the v0.3.0 removal: the `listen` banner and `status` tool referenced `_config.speech.azure_region` (no longer a field) behind a now-unreachable `backend == "azure"` guard, and the `listen` docstring still said "Whisper or Azure". Backend label is now simply "Whisper (local)".
@@ -25,6 +32,10 @@ All notable changes to sidekick-copilot are documented in this file.
 ### Performance
 
 - **LLM connection pre-warm** — `listen` now kicks off a best-effort `llm.prewarm()` task that acquires the GitHub token and opens a pooled TLS connection to the Copilot host, so the first classifier/research call skips DNS + TCP + TLS setup. All failures are swallowed.
+
+- **Token-budgeted deep-tier prompt (2f)** — `suggest_questions` now caps each prompt block via `prompt_budget.clip` (transcript 6k chars keep-tail, threads 2k, research 2.5k, grounding 4k keep-head) so a long meeting can't blow the deep model's context window or inflate latency. (`tests/test_prompt_budget.py`)
+- **Deterministic question dedup (2g)** — `PriorityQueue.enqueue` no longer makes a second fast-tier LLM round-trip per item. The new `dedup` module combines token-set Jaccard + `difflib` sequence ratio (≥0.8) against the last 10 completed questions; `_find_completed_duplicate` is now synchronous and deterministic, with zero added latency or tokens. (`tests/test_dedup.py`)
+
 
 ---
 
