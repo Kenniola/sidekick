@@ -101,6 +101,10 @@ class TriggersConfig:
 class GroundingConfig:
     repo_paths: list[str] = field(default_factory=lambda: [".github/instructions/"])
     microsoft_learn: bool = True
+    # Optional per-customer extensions to the research verified-source trust map,
+    # as {host: weight}. Code defaults already cover Microsoft + common partner/OSS
+    # docs; use this only to add or re-weight a host without editing code.
+    extra_trusted_domains: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -368,6 +372,7 @@ def _parse_config(raw: dict) -> SidekickConfig:
         grounding=GroundingConfig(
             repo_paths=grounding_raw.get("repo_paths", [".github/instructions/"]),
             microsoft_learn=grounding_raw.get("microsoft_learn", True),
+            extra_trusted_domains=grounding_raw.get("extra_trusted_domains", {}),
         ),
         output=OutputConfig(
             auto_save=output_raw.get("auto_save", True),

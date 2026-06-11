@@ -141,7 +141,7 @@ The `research` tool is for manual ad-hoc questions — the loop handles everythi
 | `listen` | — | Start audio capture + autonomous loop |
 | `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, observations |
 | `add_context` | — | Inject live context — notes, files, or images (vision LLM) |
-| `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, verified web sources) |
+| `research` | `r <topic>` | Ad-hoc question (Microsoft Learn + verified web sources, domain-routed; workspace docs) |
 | `prototype` | `p <desc>` | Generate code (PySpark, T-SQL, DAX, pipeline) |
 | `status` | `s` / `.` | New threads and research since last check |
 | `stop` | `x` | End session, save summary |
@@ -244,6 +244,8 @@ Click the status bar badge to open `@sidekick status` in chat.
 | `SIDEKICK_CLASSIFY_INTERVAL` | `10` | Seconds between classifier calls |
 | `SIDEKICK_WHISPER_MODEL` | `small.en` | Whisper model size (`base.en` · `small.en` · `medium.en` · `large-v3`) |
 | `SIDEKICK_WHISPER_COMPUTE` | `int8` | CTranslate2 compute type (`int8` · `int8_float16` · `float16` · `float32`) |
+| `TAVILY_API_KEY` | _(unset)_ | Optional. Enables live web search via [Tavily](https://tavily.com). When unset, research still runs against Microsoft Learn. |
+| `BRAVE_API_KEY` | _(unset)_ | Optional. Fallback web-search provider ([Brave Search API](https://brave.com/search/api/)), used only if `TAVILY_API_KEY` is not set. |
 
 Speech config (model, compute_type) can also be set per-customer in `customers.yaml`.
 
@@ -277,7 +279,7 @@ sidekick list-configs  # Show available profiles
 └──────────────────────────────────────────────────────────┘
 ```
 
-Research searches: workspace docs (keyword + content scoring) → `.github/instructions/` (content-aware) → Microsoft Learn (filtered, top-5 from 8 fetched).
+Research searches: workspace docs (keyword + content scoring) → `.github/instructions/` (content-aware) → live web (Microsoft Learn API always, plus an optional Tavily/Brave provider) ranked by a verified-source trust map with per-domain routing.
 
 ### v0.2.0 Optimisations
 
@@ -285,7 +287,7 @@ Research searches: workspace docs (keyword + content scoring) → `.github/instr
 - **Grounding context** — `suggest_questions` loads team standards and past engagement artifacts via a shared httpx client (no per-call client creation)
 - **`add_context` tool** — inject notes, files (.md/.txt/.py/.json, 4KB cap), or images (base64 → vision LLM extraction, 10MB cap) mid-session
 - **Smart dedup** — priority queue checks new questions against last 10 completed outputs via fast-tier LLM; duplicates are re-researched with enriched context (previous answer appended) rather than skipped
-- **Better web search** — fetches 8 MS Learn results, filters via URL depth and rejects training/certification pages, returns top 5
+- **Per-domain source routing** — live web results (Microsoft Learn + optional Tavily/Brave) are filtered to a verified-source trust map and ranked so Microsoft docs stay high while the question's detected domain lifts its preferred sources (e.g. an AWS question promotes `docs.aws.amazon.com`). Only verified URLs are surfaced for citation. Replaces the retired Bing Web Search API.
 - **Dynamic prompts** — hardcoded "Microsoft Fabric" replaced with detected domains across classifier, research synthesis, and advisor prompts
 - **Thread detection** — explicit rules in analyst prompt for topic-shift detection; classifier prompt enriched with injected context documents
 - **Grounding cache** — 5-minute TTL cache on `_build_grounding_context()` via `asyncio.to_thread()`

@@ -84,11 +84,14 @@ The background loop handles that automatically. The `research` tool exists for
 ### `research` — Manual ad-hoc question
 - **Call when**: user explicitly asks a technical question (e.g. "can Fabric connect
   to S3 in a VPC?", "what's the DirectLake row limit?")
-- **What it does**: Runs the research pipeline on-demand against MS Learn, workspace
-  docs, and instruction files. Fetches 8 results from MS Learn,
-  filters out shallow/training/certification URLs, and returns top 5.
-- **Domain-aware**: Synthesis prompt adapts to detected domains rather than assuming
-  a fixed technology stack.
+- **What it does**: Runs the research pipeline on-demand against live web sources
+  (Microsoft Learn API always; plus Tavily or Brave if a key is set), workspace
+  docs, and instruction files.
+- **Domain-aware source routing**: Results are filtered to a verified-source trust
+  map and ranked so Microsoft docs stay high while the question's detected domain
+  lifts its preferred sources (e.g. an AWS question promotes `docs.aws.amazon.com`).
+  Only verified URLs are surfaced; the synthesis prompt also adapts to detected
+  domains rather than assuming a fixed technology stack.
 - **Parameters**: `question` (required), `depth` (`quick` / `medium` / `deep`)
 - **Returns**: Sourced answer with references
 - **Note**: This is for MANUAL questions only. Questions detected in the live

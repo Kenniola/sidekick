@@ -6,6 +6,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 
@@ -66,13 +67,74 @@ Sources [{self.confidence.upper()}]:
 {source_text}"""
 
 
+@dataclass
+class _WebHit:
+    """A single ranked web search result from any provider."""
+
+    title: str
+    url: str
+    snippet: str = ""
+    source_label: str = "Web"
+    score: float = 0.0
+
+
+# ---------------------------------------------------------------------------
+# Verified-source trust map and per-domain routing
+# ---------------------------------------------------------------------------
+# Single source of truth for "verified URLs". A result is only surfaced if its
+# host matches a family below; everything else is dropped. Weights set the
+# default ranking — Microsoft properties rank highest (the engagement
+# verification rule), then partner/OSS docs. Kept small and in-code (not a long
+# config list); customer profiles may *extend* it via
+# ``grounding.extra_trusted_domains`` but never need to restate these.
+_SOURCE_TRUST: dict[str, float] = {
+    "learn.microsoft.com": 100.0,
+    "blog.fabric.microsoft.com": 95.0,
+    "roadmap.fabric.microsoft.com": 95.0,
+    "techcommunity.microsoft.com": 80.0,
+    "azure.microsoft.com": 75.0,
+    "microsoft.com": 70.0,            # other Microsoft properties
+    "docs.databricks.com": 65.0,
+    "databricks.com": 55.0,
+    "docs.delta.io": 65.0,
+    "spark.apache.org": 60.0,
+    "docs.aws.amazon.com": 60.0,
+    "aws.amazon.com": 50.0,
+    "postgresql.org": 60.0,
+}
+
+# Boost added to a result when its host is a preferred source for one of the
+# question's detected domains. This is what makes routing work: an AWS question
+# lifts AWS docs above their baseline so they can rank alongside Microsoft docs,
+# without ever suppressing Microsoft sources when they are relevant.
+_ROUTING_BOOST = 45.0
+
+# Detected-domain keyword (substring, lowercased) -> preferred host families.
+# Matched against the domain labels already detected/configured upstream
+# (e.g. "AWS S3 Integration", "Microsoft Fabric", "PostgreSQL").
+_DOMAIN_ROUTING: dict[str, list[str]] = {
+    "aws": ["docs.aws.amazon.com", "aws.amazon.com"],
+    "s3": ["docs.aws.amazon.com", "aws.amazon.com"],
+    "databricks": ["docs.databricks.com", "databricks.com", "docs.delta.io", "spark.apache.org"],
+    "delta": ["docs.delta.io", "docs.databricks.com"],
+    "spark": ["spark.apache.org", "docs.databricks.com"],
+    "postgres": ["postgresql.org", "learn.microsoft.com"],
+    "fabric": ["learn.microsoft.com", "blog.fabric.microsoft.com", "roadmap.fabric.microsoft.com"],
+    "power bi": ["learn.microsoft.com", "blog.fabric.microsoft.com"],
+    "azure": ["learn.microsoft.com", "azure.microsoft.com"],
+}
+
+
 class ResearchPipeline:
     """Multi-source research pipeline.
 
     Searches:
-    1. Workspace files (engagement artifacts from grounding.repo_paths)
-    2. Instruction files (.github/instructions/)
-    3. LLM synthesis with context from above
+    1. Live web — Microsoft Learn API (always) + a general web-search provider
+       (Tavily or Brave, if a key is set), ranked by a verified-source trust map
+       with per-domain routing (e.g. an AWS question lifts AWS docs).
+    2. Workspace files (engagement artifacts from grounding.repo_paths)
+    3. Instruction files (.github/instructions/)
+    4. LLM synthesis with context from above
     """
 
     def __init__(self, config=None):
@@ -83,6 +145,16 @@ class ResearchPipeline:
         self._workspace_root = Path(
             os.environ.get("SIDEKICK_WORKSPACE_ROOT", ".")
         )
+        # Verified-source trust map: code defaults + optional per-customer
+        # extensions from grounding.extra_trusted_domains ({host: weight}).
+        self._trust: dict[str, float] = dict(_SOURCE_TRUST)
+        extra = getattr(getattr(config, "grounding", None), "extra_trusted_domains", None)
+        if isinstance(extra, dict):
+            for host, weight in extra.items():
+                try:
+                    self._trust[str(host).lower().lstrip(".")] = float(weight)
+                except (TypeError, ValueError):
+                    continue
 
     async def execute_direct(
         self,
@@ -105,8 +177,9 @@ class ResearchPipeline:
         repo_context = self._search_repo(search_query)
         instruction_context = self._search_instructions(search_query)
 
-        # Gather live web context from MS Learn and verified sources
-        web_context = await self._search_web(search_query)
+        # Gather live web context from MS Learn and verified sources,
+        # ranked with per-domain source routing.
+        web_context = await self._search_web(search_query, domains)
 
         # Build customer engagement context
         customer_block = ""
@@ -298,36 +371,91 @@ Cite the URLs from web results where they support your answer."""
         facts = getattr(context, "key_facts", [])
         return "\n".join(f"- {f}" for f in facts) if facts else "(no key facts yet)"
 
-    async def _search_web(self, question: str) -> str:
-        """Search verified sources via the MS Learn search API and Bing site-scoped search.
+    async def _search_web(self, question: str, domains: list[str] | None = None) -> str:
+        """Search verified sources and rank them with per-domain routing.
 
-        Uses the free MS Learn search API (no key required) and optionally
-        Bing Web Search API for broader verified sources.
+        Two live layers feed a single ranker:
+          1. Microsoft Learn search API (free, no key) — authoritative MS docs.
+          2. A general web-search provider (Tavily or Brave, if a key is set) —
+             broadens coverage to AWS / Databricks / Spark / PostgreSQL etc.
+             Replaces the retired Bing Web Search API (decommissioned 2025-08-11).
 
-        Returns formatted snippets with URLs for the LLM to cite.
+        Every hit is filtered to the verified-source trust map and ranked so
+        Microsoft sources stay high while the question's detected domain lifts
+        its preferred sources (e.g. an AWS question promotes docs.aws.amazon.com
+        above its baseline). Only verified URLs are surfaced for citation.
         """
-        results: list[str] = []
+        hits: list[_WebHit] = []
 
-        # 1. Microsoft Learn search (free, no API key)
+        # 1. Microsoft Learn (always on, no key)
         try:
-            learn_results = await self._search_ms_learn(question)
-            results.extend(learn_results)
+            hits.extend(await self._search_ms_learn(question))
         except Exception as e:
             logger.warning("MS Learn search failed: %s", e)
 
-        # 2. Bing Web Search (if API key configured) — scoped to verified domains
-        bing_key = os.environ.get("BING_SEARCH_KEY", "")
-        if bing_key:
-            try:
-                bing_results = await self._search_bing(question, bing_key)
-                results.extend(bing_results)
-            except Exception as e:
-                logger.warning("Bing search failed: %s", e)
+        # 2. General web-search provider (optional, selected by which key is set)
+        try:
+            hits.extend(await self._search_provider(question))
+        except Exception as e:
+            logger.warning("Web provider search failed: %s", e)
 
-        if not results:
-            return "(no web results — LLM will use training knowledge)"
+        ranked = self._rank_hits(hits, domains)
+        if not ranked:
+            return "(no verified web results — LLM will use training knowledge)"
 
-        return "\n\n".join(results[:8])
+        return "\n\n".join(self._format_hit(h) for h in ranked[:8])
+
+    # ----- ranking & source verification -----
+
+    def _trust_for_host(self, host: str) -> float:
+        """Trust weight for a host, or 0.0 if it is not a verified source."""
+        host = host.lower()
+        best = 0.0
+        for trusted, weight in self._trust.items():
+            if host == trusted or host.endswith("." + trusted):
+                best = max(best, weight)
+        return best
+
+    @staticmethod
+    def _routing_hosts(domains: list[str] | None) -> set[str]:
+        """Preferred source hosts for the question's detected domains."""
+        if not domains:
+            return set()
+        preferred: set[str] = set()
+        for d in domains:
+            dl = d.lower()
+            for key, hosts in _DOMAIN_ROUTING.items():
+                if key in dl:
+                    preferred.update(hosts)
+        return preferred
+
+    def _rank_hits(
+        self, hits: list[_WebHit], domains: list[str] | None,
+    ) -> list[_WebHit]:
+        """Filter to verified sources, score with domain routing, dedupe, sort."""
+        routing = self._routing_hosts(domains)
+        scored: list[_WebHit] = []
+        seen: set[str] = set()
+        for h in hits:
+            url = (h.url or "").strip()
+            if not url or url in seen:
+                continue
+            host = urlparse(url).netloc.lower()
+            base = self._trust_for_host(host)
+            if base <= 0:
+                continue  # not a verified source — drop (verified-URL rule)
+            in_route = any(
+                host == r or host.endswith("." + r) for r in routing
+            )
+            h.score = base + (_ROUTING_BOOST if in_route else 0.0)
+            seen.add(url)
+            scored.append(h)
+        scored.sort(key=lambda x: x.score, reverse=True)
+        return scored
+
+    @staticmethod
+    def _format_hit(h: _WebHit) -> str:
+        return f"[{h.source_label}] {h.title}\n  URL: {h.url}\n  {h.snippet}"
 
     @staticmethod
     def _extract_urls(web_context: str) -> list[str]:
@@ -341,7 +469,7 @@ Cite the URLs from web results where they support your answer."""
                     urls.append(url)
         return urls
 
-    async def _search_ms_learn(self, question: str) -> list[str]:
+    async def _search_ms_learn(self, question: str) -> list[_WebHit]:
         """Search Microsoft Learn documentation via the free search API."""
         url = "https://learn.microsoft.com/api/search"
         params = {
@@ -349,7 +477,7 @@ Cite the URLs from web results where they support your answer."""
             "locale": "en-us",
             "$top": "8",
         }
-        results = []
+        hits: list[_WebHit] = []
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, params=params)
             resp.raise_for_status()
@@ -360,15 +488,16 @@ Cite the URLs from web results where they support your answer."""
                 snippet = str(item.get("description", ""))[:200]
                 link = item.get("url", "")
                 if title and link and self._is_useful_url(link):
-                    results.append(f"[MS Learn] {title}\n  URL: {link}\n  {snippet}")
+                    hits.append(_WebHit(
+                        title=title, url=link, snippet=snippet, source_label="MS Learn",
+                    ))
 
-        return results[:5]
+        return hits
 
     @staticmethod
     def _is_useful_url(url: str) -> bool:
         """Filter out broad landing pages and certification guides."""
         # Reject root-level landing pages with very short paths
-        from urllib.parse import urlparse
         parsed = urlparse(url)
         path = parsed.path.rstrip("/")
         path_segments = [s for s in path.split("/") if s]
@@ -383,37 +512,72 @@ Cite the URLs from web results where they support your answer."""
         path_lower = path.lower()
         return not any(p in path_lower for p in reject_patterns)
 
-    async def _search_bing(self, question: str, api_key: str) -> list[str]:
-        """Search verified domains via Bing Web Search API v7.
+    async def _search_provider(self, question: str) -> list[_WebHit]:
+        """Query a general web-search provider, if one is configured.
 
-        Scopes results to: learn.microsoft.com, blog.fabric.microsoft.com,
-        docs.databricks.com, docs.delta.io, spark.apache.org, docs.aws.amazon.com.
+        The provider is chosen by which API key is present; with no key this
+        layer is simply skipped (MS Learn still runs). Provider results are not
+        trusted here — they pass through the same verified-source ranker as every
+        other hit, so non-allowlisted hosts are dropped regardless.
         """
-        site_query = (
-            f"{question} ("
-            "site:learn.microsoft.com OR "
-            "site:blog.fabric.microsoft.com OR "
-            "site:docs.databricks.com OR "
-            "site:docs.delta.io OR "
-            "site:spark.apache.org OR "
-            "site:docs.aws.amazon.com"
-            ")"
-        )
-        url = "https://api.bing.microsoft.com/v7.0/search"
-        headers = {"Ocp-Apim-Subscription-Key": api_key}
-        params = {"q": site_query, "count": "5", "mkt": "en-GB"}
+        tavily_key = os.environ.get("TAVILY_API_KEY", "")
+        if tavily_key:
+            return await self._search_tavily(question, tavily_key)
+        brave_key = os.environ.get("BRAVE_API_KEY", "")
+        if brave_key:
+            return await self._search_brave(question, brave_key)
+        return []
 
-        results = []
+    async def _search_tavily(self, question: str, api_key: str) -> list[_WebHit]:
+        """Tavily Search API — https://api.tavily.com/search.
+
+        Scoped to the verified-source allowlist via ``include_domains`` so the
+        API mostly returns citable results; the ranker still enforces the
+        allowlist as the authority.
+        """
+        payload = {
+            "api_key": api_key,
+            "query": question,
+            "search_depth": "basic",
+            "max_results": 8,
+            "include_domains": list(self._trust.keys()),
+        }
+        hits: list[_WebHit] = []
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post("https://api.tavily.com/search", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            for item in data.get("results", [])[:8]:
+                title = item.get("title", "")
+                link = item.get("url", "")
+                snippet = str(item.get("content", ""))[:200]
+                if title and link:
+                    hits.append(_WebHit(
+                        title=title, url=link, snippet=snippet, source_label="Web",
+                    ))
+        return hits
+
+    async def _search_brave(self, question: str, api_key: str) -> list[_WebHit]:
+        """Brave Search API — https://api.search.brave.com/res/v1/web/search.
+
+        Brave has no per-request domain allowlist, so results are filtered by the
+        verified-source ranker after retrieval.
+        """
+        url = "https://api.search.brave.com/res/v1/web/search"
+        headers = {"Accept": "application/json", "X-Subscription-Token": api_key}
+        params = {"q": question, "count": "10", "country": "GB"}
+        hits: list[_WebHit] = []
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.get(url, headers=headers, params=params)
             resp.raise_for_status()
             data = resp.json()
-
-            for page in data.get("webPages", {}).get("value", [])[:5]:
-                title = page.get("name", "")
-                snippet = page.get("snippet", "")[:200]
-                link = page.get("url", "")
+            for item in data.get("web", {}).get("results", [])[:10]:
+                title = item.get("title", "")
+                link = item.get("url", "")
+                snippet = str(item.get("description", ""))[:200]
                 if title and link:
-                    results.append(f"[Web] {title}\n  URL: {link}\n  {snippet}")
+                    hits.append(_WebHit(
+                        title=title, url=link, snippet=snippet, source_label="Web",
+                    ))
+        return hits
 
-        return results
