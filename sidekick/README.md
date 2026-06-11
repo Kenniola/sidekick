@@ -142,7 +142,7 @@ The `research` tool is for manual ad-hoc questions — the loop handles everythi
 | `suggest_questions` | `q` / `?` | Ranked questions with claim analysis, corrections, offerings |
 | `add_context` | — | Inject live context — notes, files, or images (vision LLM) |
 | `research` | `r <topic>` | Ad-hoc question (MS Learn, workspace docs, Eng Hub) |
-| `offerings` | `o` | VBD/IP offerings from Eng Hub (PoC, ADR, WorkshopPLUS) |
+| `offerings` | `o` | VBD/IP offerings from Eng Hub (PoC, ADR, WorkshopPLUS) — needs a host-injected authenticated search source; otherwise reports *auth required* |
 | `prototype` | `p <desc>` | Generate code (PySpark, T-SQL, DAX, pipeline) |
 | `status` | `s` / `.` | New threads and research since last check |
 | `stop` | `x` | End session, save summary |
@@ -284,7 +284,7 @@ Research searches: workspace docs (keyword + content scoring) → `.github/instr
 ### v0.2.0 Optimisations
 
 - **Domain auto-detection** — LLM analyses first 30 transcript lines at batch 3 to detect domains; merges with config and invalidates grounding cache
-- **Parallel I/O** — `suggest_questions` runs Eng Hub + grounding context via `asyncio.gather()` with shared httpx clients (no per-call client creation)
+- **Parallel I/O** — `suggest_questions` runs Eng Hub + grounding context via `asyncio.gather()` (grounding uses a shared httpx client; Eng Hub uses the host-injected search source — no per-call client creation)
 - **`add_context` tool** — inject notes, files (.md/.txt/.py/.json, 4KB cap), or images (base64 → vision LLM extraction, 10MB cap) mid-session
 - **Smart dedup** — priority queue checks new questions against last 10 completed outputs via fast-tier LLM; duplicates are re-researched with enriched context (previous answer appended) rather than skipped
 - **Better web search** — fetches 8 MS Learn results, filters via URL depth and rejects training/certification pages, returns top 5

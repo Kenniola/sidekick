@@ -105,9 +105,15 @@ The background loop handles that automatically. The `research` tool exists for
   relevant VBD, EDE, DE, WorkshopPLUS, PoC, ADR, and Solution Optimization offerings
   that match the current meeting topic. Also runs automatically as part of research
   answers when relevant offerings exist.
+- **Authentication**: eng.ms is Entra-gated and the Sidekick server process holds no
+  credentials for it. Live offerings are only returned when the host injects an
+  authenticated search source (e.g. wrapping the EngineeringHub MCP server) via
+  `EngHubPipeline.set_search_fn(...)`. When no source is wired, the tool returns an
+  explicit *auth required* message rather than empty or fabricated results.
 - **Parameters**: `topic` (optional) — if empty, infers from the current meeting
   context (recent topic threads and key facts)
 - **Returns**: A list of matched offerings with type labels, titles, and eng.ms URLs
+  (each tagged `source="live"`)
 - **Use during meetings**: When a client describes a problem or workload, check
   offerings to see if there's a funded delivery engagement that matches. This turns
   advisory conversations into concrete next steps.
