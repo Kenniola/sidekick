@@ -39,6 +39,7 @@ from sidekick.actions.prototype import PrototypePipeline
 from sidekick.output.session_log import SessionLog
 from sidekick.output import notifier
 from sidekick import grounding
+from sidekick import engine
 
 logger = logging.getLogger("sidekick")
 
@@ -179,7 +180,9 @@ async def _run_listen_loop():
                 # No audio chunk arrived — check speech timer
                 if time.monotonic() - last_speech_time >= SILENCE_TIMEOUT_SECS:
                     if pending_lines:
-                        await _classify_and_dispatch(pending_lines, consecutive_errors)
+                        await engine.classify_and_dispatch(
+                            _state, pending_lines, consecutive_errors, _notify
+                        )
                         pending_lines.clear()
                     logger.info(
                         "No speech detected for %ds — auto-stopping.",
@@ -213,7 +216,9 @@ async def _run_listen_loop():
                 # (handles background hum / ambient noise with no words).
                 if time.monotonic() - last_speech_time >= SILENCE_TIMEOUT_SECS:
                     if pending_lines:
-                        await _classify_and_dispatch(pending_lines, consecutive_errors)
+                        await engine.classify_and_dispatch(
+                            _state, pending_lines, consecutive_errors, _notify
+                        )
                         pending_lines.clear()
                     logger.info(
                         "No recognised speech for %ds (audio still active) "
@@ -233,7 +238,9 @@ async def _run_listen_loop():
                     continue
                 elapsed = time.monotonic() - last_classify_time
                 if elapsed >= CLASSIFY_INTERVAL:
-                    await _classify_and_dispatch(pending_lines, consecutive_errors)
+                    await engine.classify_and_dispatch(
+                        _state, pending_lines, consecutive_errors, _notify
+                    )
                     pending_lines.clear()
                     last_classify_time = time.monotonic()
                     consecutive_errors = 0
@@ -267,91 +274,6 @@ async def _run_listen_loop():
         if _state.recogniser is not None:
             _state.recogniser.close()
             logger.info("Speech recogniser closed after listen loop exit.")
-
-
-async def _detect_domains() -> None:
-    """Auto-detect domains from transcript after enough context accumulates.
-
-    Runs a fast-tier LLM call on the first ~30 transcript lines to identify
-    which technology domains are being discussed. Detected domains supplement
-    (not replace) the configured domains from customers.yaml.
-    """
-    if _state.domains_detected or not _state.context or not _state.config:
-        return
-
-    transcript_sample = _state.context.full_transcript[-30:]
-    if len(transcript_sample) < 10:
-        return
-
-    from sidekick.llm import call_llm, parse_llm_json
-    sample_text = "\n".join(
-        f"{getattr(l, 'speaker', '?')}: {getattr(l, 'text', str(l))}"
-        for l in transcript_sample
-    )
-
-    try:
-        result = await call_llm(
-            system_prompt=(
-                "You analyse meeting transcripts to detect technology domains "
-                "being discussed. Return a JSON object with a single key "
-                "\"domains\" containing a list of 3-8 domain strings. "
-                "Examples: \"Microsoft Fabric\", \"Power BI\", \"Dynamics 365\", "
-                "\"Azure APIM\", \"Azure Service Bus\", \"Oracle\", \"PostgreSQL\", "
-                "\"AWS S3\", \"Databricks\", \"Legacy Systems\", \"Cosmos DB\". "
-                "Only include domains clearly mentioned or implied."
-            ),
-            user_prompt=f"Transcript sample:\n{sample_text}",
-            json_output=True,
-            tier="fast",
-            timeout=8,
-        )
-        data = parse_llm_json(result)
-        detected = data.get("domains", [])
-        if detected:
-            # Merge with configured domains (no duplicates)
-            existing = {d.lower() for d in _state.config.domains}
-            new_domains = [d for d in detected if d.lower() not in existing]
-            if new_domains:
-                _state.config.domains.extend(new_domains)
-                _state.context.detected_domains = new_domains
-                logger.info("Auto-detected domains: %s", new_domains)
-                # Invalidate grounding cache since domains changed
-                _state.grounding_cache = None
-    except Exception as e:
-        logger.debug("Domain detection failed: %s", e)
-
-    _state.domains_detected = True
-
-
-async def _classify_and_dispatch(lines: list, consecutive_errors: int) -> None:
-    """Send accumulated transcript lines to the classifier and dispatch results."""
-    _state.classify_batch_count += 1
-
-    action_items = await _state.analyst.analyse_chunk(lines)
-
-    # Auto-detect domains after 3 batches (enough transcript context)
-    if _state.classify_batch_count == 3 and not _state.domains_detected:
-        await _detect_domains()
-
-    for item in action_items:
-        await _state.queue.enqueue(item)
-    results = await _state.queue.process_ready(
-        research=_state.research,
-        prototype=_state.prototype,
-        context=_state.context,
-        domains=_state.config.domains if _state.config else None,
-    )
-    for result in results:
-        _state.session_log.record(result)
-        logger.info(
-            "Sidekick output: [%s] %s",
-            result.action_type,
-            result.question[:60],
-        )
-
-    # Notify for new findings (sound alert + log file)
-    for result in results:
-        _notify(result)
 
 
 def _notify(result) -> None:
