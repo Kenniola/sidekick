@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import time
-from pathlib import Path
 
 try:
     import numpy as np  # noqa: F401 — must be imported at module level to avoid import-lock deadlock with MCP stdio threads
@@ -38,6 +37,7 @@ from sidekick.actions.research import ResearchPipeline
 from sidekick.actions.prototype import PrototypePipeline
 from sidekick.output.session_log import SessionLog
 from sidekick.output import notifier
+from sidekick import grounding
 
 logger = logging.getLogger("sidekick")
 
@@ -468,113 +468,13 @@ def _get_unseen_findings() -> str:
 
 
 def _build_grounding_context() -> str:
-    """Build grounding context from instruction files and past engagement artifacts.
+    """Build grounding context from team standards and engagement artifacts.
 
-    Loads team standards from .github/instructions/ and recent engagement
-    artifacts from configured repo paths to give the advisor deep context.
-
-    This is synchronous file I/O — callers should wrap with asyncio.to_thread()
-    to avoid blocking the event loop.
+    Thin wrapper over :func:`sidekick.grounding.build_grounding_context` that
+    supplies the current config and live context. Synchronous file I/O —
+    callers should wrap with ``asyncio.to_thread`` to avoid blocking the loop.
     """
-    if not _config:
-        return "(no config loaded)"
-
-    workspace_root = Path(
-        os.environ.get("SIDEKICK_WORKSPACE_ROOT", ".")
-    )
-    parts: list[str] = []
-
-    # 1. Load relevant instruction files based on configured domains
-    instructions_dir = workspace_root / ".github" / "instructions"
-    if instructions_dir.exists():
-        domain_keywords = [d.lower() for d in _config.domains]
-        # Map domain keywords to instruction file names
-        keyword_to_file = {
-            "pyspark": "pyspark-notebooks",
-            "notebook": "pyspark-notebooks",
-            "spark": "pyspark-notebooks",
-            "warehouse": "tsql-warehouse",
-            "sql": "tsql-warehouse",
-            "t-sql": "tsql-warehouse",
-            "dax": "dax-powerbi",
-            "power bi": "dax-powerbi",
-            "powerbi": "dax-powerbi",
-            "semantic model": "dax-powerbi",
-            "directlake": "dax-powerbi",
-            "dataflow": "dataflows-pipelines",
-            "pipeline": "dataflows-pipelines",
-            "governance": "governance-security",
-            "purview": "governance-security",
-            "security": "governance-security",
-            "rls": "governance-security",
-            "aws": "cross-cloud-integration",
-            "s3": "cross-cloud-integration",
-            "cross-cloud": "cross-cloud-integration",
-        }
-
-        loaded_files: set[str] = set()
-        for domain in domain_keywords:
-            for kw, fname in keyword_to_file.items():
-                if kw in domain and fname not in loaded_files:
-                    fpath = instructions_dir / f"{fname}.instructions.md"
-                    if fpath.exists():
-                        try:
-                            content = fpath.read_text(encoding="utf-8")
-                            # Take first 800 chars to stay within context limits
-                            parts.append(f"--- {fname} standards ---\n{content[:800]}")
-                            loaded_files.add(fname)
-                        except Exception:
-                            pass
-
-    # 2. Load recent engagement artifacts (meeting preps, QA summaries)
-    for repo_path_str in _config.grounding.repo_paths:
-        repo_path = workspace_root / repo_path_str
-        if not repo_path.exists():
-            continue
-        # Skip the instructions directory (already loaded above)
-        if repo_path_str.rstrip("/").endswith("instructions"):
-            continue
-
-        # Search for recent meeting prep and summary files
-        artifact_files: list[tuple[float, Path]] = []
-        for suffix in ("*.md", "*.txt"):
-            for f in repo_path.rglob(suffix):
-                try:
-                    artifact_files.append((f.stat().st_mtime, f))
-                except Exception:
-                    continue
-
-        # Sort by modification time (newest first), take top 3
-        artifact_files.sort(key=lambda x: x[0], reverse=True)
-        for _, f in artifact_files[:3]:
-            try:
-                content = f.read_text(encoding="utf-8")
-                rel = f.relative_to(workspace_root)
-                parts.append(f"--- {rel} (recent artifact) ---\n{content[:1200]}")
-            except Exception:
-                continue
-
-    # 3. Load previous session summaries for this customer
-    outputs_dir = Path.home() / ".sidekick" / "outputs" / (_config.customer or "default")
-    if outputs_dir.exists():
-        summary_files = sorted(
-            outputs_dir.glob("sidekick_summary_*.md"),
-            key=lambda f: f.stat().st_mtime,
-            reverse=True,
-        )
-        for sf in summary_files[:2]:
-            try:
-                content = sf.read_text(encoding="utf-8")
-                parts.append(f"--- Previous session: {sf.name} ---\n{content[:400]}")
-            except Exception:
-                continue
-
-    # 4. Injected live context (from add_context tool)
-    if _context and _context.context_documents:
-        for i, doc in enumerate(_context.context_documents[-5:], 1):
-            parts.append(f"--- Live context #{i} ---\n{doc[:1500]}")
-
-    return "\n\n".join(parts) if parts else "(no grounding context available)"
+    return grounding.build_grounding_context(_config, _context)
 
 
 async def _get_grounding_context_async() -> str:
