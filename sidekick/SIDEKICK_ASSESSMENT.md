@@ -283,11 +283,11 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 - [x] Token-budget the deep-tier `suggest_questions` prompt (perf, §8b) — `prompt_budget.clip`
 - [x] Fold dedup into the classifier prompt to remove a round-trip (perf, §8b) — *delivered as a **deterministic local check** (`dedup.py`, token-Jaccard + difflib) instead of folding into the classifier prompt; removes the second LLM round-trip entirely with zero contract change and zero added tokens.*
 
-**Phase 3 — Test hardening (2–3 days)**
-- [ ] Live audio loop (`_run_listen_loop`) test harness, then extract it from `server.py` *(carried over from Phase 2)*
-- [ ] Priority queue (route/merge/dedup/expiry/timeout)
-- [ ] LLM tier routing + fallback (mock httpx)
-- [ ] Config deep-merge; classifier JSON parse; session summary
+**Phase 3 — Test hardening (2–3 days)** ✅ **COMPLETE** *(test-first, one commit per slice; 109 → 179 tests)*
+- [x] Live audio loop (`_run_listen_loop`) test harness, then extract it from `server.py` *(carried over from Phase 2)* — extracted to `engine.run_listen_loop` (`_initialise_capture` + `_consume_audio`); 12 tests in `tests/test_listen_loop.py`
+- [x] Priority queue (route/merge/dedup/expiry/timeout) — 15 tests in `tests/test_priority_queue.py`
+- [x] LLM tier routing + fallback (mock httpx) — 13 tests in `tests/test_llm_routing.py`
+- [x] Config deep-merge; classifier JSON parse; session summary — 30 tests across `tests/test_config_merge.py`, `tests/test_classifier_parse.py`, `tests/test_session_log.py`
 
 **Phase 4 — Killer features (demo-focused; tight scope)**
 - [ ] Answer-card toast with answer + source (§9.1)
@@ -307,4 +307,4 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 
 ---
 
-*Phases 0–2 complete (commit `0a16a09`, 109 tests passing). Phases 3 & 4 next.*
+*Phases 0–3 complete (commit `b9b4132`, 179 tests passing). Phase 4 next.*
