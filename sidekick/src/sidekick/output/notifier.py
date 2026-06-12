@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,10 +20,58 @@ logger = logging.getLogger("sidekick")
 # can target a temp directory without import-time HOME binding.
 _ALERTS_SUBPATH = (".sidekick", "live")
 
+# Max length of the one-line answer carried into the toast. Long enough to be
+# useful, short enough that the OS notification doesn't truncate it.
+_ANSWER_MAX_CHARS = 160
+
+_URL_RE = re.compile(r"https?://\S+")
+
 
 def _default_alerts_dir() -> Path:
     """Return ~/.sidekick/live (resolved fresh so HOME changes are honoured)."""
     return Path.home().joinpath(*_ALERTS_SUBPATH)
+
+
+def _one_line_answer(result, limit: int = _ANSWER_MAX_CHARS) -> str:
+    """Derive a single-line answer for the toast from ``result.answer``.
+
+    Takes the text before any ``Sources:`` section, collapses it to the first
+    non-empty line, trims a trailing URL fragment, and clips to *limit* chars
+    (on a word boundary, with an ellipsis). Returns ``""`` when there is no
+    answer body (e.g. a prototype result), so callers can fall back to the
+    question summary.
+    """
+    answer = (getattr(result, "answer", "") or "").strip()
+    if not answer:
+        return ""
+
+    # Drop the trailing "Sources:" / "Sources [HIGH]:" block — toast shows the
+    # source link separately.
+    body = re.split(r"\n\s*Sources?\b", answer, maxsplit=1, flags=re.IGNORECASE)[0]
+
+    # First non-empty line is the lead answer (research prompts lead with it).
+    first_line = next((ln.strip() for ln in body.splitlines() if ln.strip()), "")
+    if not first_line:
+        return ""
+
+    if len(first_line) <= limit:
+        return first_line
+
+    clipped = first_line[:limit].rsplit(" ", 1)[0].rstrip()
+    return f"{clipped or first_line[:limit].rstrip()}\u2026"
+
+
+def _first_source_url(result) -> str:
+    """Return the first http(s) URL found in ``result.sources``, else ``""``.
+
+    Sources are formatted as ``"<title> \u2014 <URL>"`` strings; this pulls the
+    bare URL so the extension can open it directly.
+    """
+    for src in getattr(result, "sources", []) or []:
+        match = _URL_RE.search(str(src))
+        if match:
+            return match.group(0).rstrip(").,;")
+    return ""
 
 
 def play_sound(sound: str = "chime") -> None:
@@ -63,6 +112,8 @@ def write_alert(result, alerts_dir: Path | None = None) -> None:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "type": result.action_type,
             "summary": result.question[:120],
+            "answer": _one_line_answer(result),
+            "source": _first_source_url(result),
             "confidence": getattr(result, "confidence", "medium"),
             "priority": getattr(result, "priority", "medium"),
         }

@@ -15,6 +15,8 @@ class _FakeResult:
     question: str = "What is OneLake?"
     confidence: str = "high"
     priority: str = "high"
+    answer: str = ""
+    sources: tuple = ()
 
 
 class TestPlaySound:
@@ -72,6 +74,66 @@ class TestWriteAlert:
         assert not nested.exists()
         notifier.write_alert(_FakeResult(), alerts_dir=nested)
         assert (nested / "alerts.jsonl").exists()
+
+    def test_answer_and_source_carried_into_alert(self, tmp_path):
+        result = _FakeResult(
+            answer=(
+                "OneLake is the single, unified, logical data lake for the "
+                "whole tenant.\n\nSources [HIGH]:\n  \u2022 MS Learn \u2014 "
+                "https://learn.microsoft.com/fabric/onelake/onelake-overview"
+            ),
+            sources=(
+                "MS Learn \u2014 https://learn.microsoft.com/fabric/onelake/onelake-overview",
+            ),
+        )
+        notifier.write_alert(result, alerts_dir=tmp_path)
+        record = json.loads((tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip())
+        assert record["answer"].startswith("OneLake is the single")
+        assert "Sources" not in record["answer"]
+        assert record["source"] == "https://learn.microsoft.com/fabric/onelake/onelake-overview"
+
+    def test_answer_and_source_empty_when_absent(self, tmp_path):
+        notifier.write_alert(_FakeResult(answer="", sources=()), alerts_dir=tmp_path)
+        record = json.loads((tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip())
+        assert record["answer"] == ""
+        assert record["source"] == ""
+
+
+class TestOneLineAnswer:
+    def test_strips_sources_section(self):
+        r = _FakeResult(answer="Direct answer here.\nSources:\n  \u2022 x \u2014 http://a")
+        assert notifier._one_line_answer(r) == "Direct answer here."
+
+    def test_first_line_only(self):
+        r = _FakeResult(answer="Lead line.\nSecond paragraph that is ignored.")
+        assert notifier._one_line_answer(r) == "Lead line."
+
+    def test_clips_long_answer_with_ellipsis(self):
+        long = "word " * 60  # ~300 chars, single line
+        r = _FakeResult(answer=long.strip())
+        out = notifier._one_line_answer(r)
+        assert len(out) <= notifier._ANSWER_MAX_CHARS + 1  # +1 for ellipsis
+        assert out.endswith("\u2026")
+
+    def test_empty_answer_returns_empty(self):
+        assert notifier._one_line_answer(_FakeResult(answer="")) == ""
+
+
+class TestFirstSourceUrl:
+    def test_extracts_url_from_titled_source(self):
+        r = _FakeResult(sources=("MS Learn \u2014 https://learn.microsoft.com/x",))
+        assert notifier._first_source_url(r) == "https://learn.microsoft.com/x"
+
+    def test_skips_sources_without_url(self):
+        r = _FakeResult(sources=("Based on training knowledge", "Doc \u2014 http://b.com/p"))
+        assert notifier._first_source_url(r) == "http://b.com/p"
+
+    def test_no_url_returns_empty(self):
+        assert notifier._first_source_url(_FakeResult(sources=("no url here",))) == ""
+
+    def test_strips_trailing_punctuation(self):
+        r = _FakeResult(sources=("see (https://learn.microsoft.com/x).",))
+        assert notifier._first_source_url(r) == "https://learn.microsoft.com/x"
 
 
 class TestNotify:

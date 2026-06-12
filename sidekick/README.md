@@ -224,10 +224,10 @@ notifications:
 All values silently no-op on macOS/Linux.
 
 ### VS Code Extension (sidekick-notify)
-Optional companion extension in `repo/sidekick-notify/` — polls `alerts.jsonl` and shows VS Code toast notifications with a status bar badge.
+Optional companion extension in `repo/sidekick-notify/` — polls `alerts.jsonl` and shows VS Code toast notifications (the one-line **answer card** plus an **Open Source** button when a finding cites a URL) with a status bar badge.
 
 ```powershell
-code --install-extension repo/sidekick-notify/sidekick-notify-0.1.0.vsix
+code --install-extension repo/sidekick-notify/sidekick-notify-0.2.0.vsix
 ```
 
 Click the status bar badge to open `@sidekick status` in chat.
