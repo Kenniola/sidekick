@@ -145,6 +145,7 @@ class SpeechConfig:
     language: str = "en-GB"          # informational; Whisper uses "en"
     model: str = "small.en"          # base.en | small.en | medium.en | large-v3
     compute_type: str = "int8"       # int8 | int8_float16 | float16 | float32
+    device: str = "auto"             # auto | cpu | cuda (CTranslate2 — no NPU)
 
 
 # Canonical default model fallback chains, shared with llm._TIER_CONFIG.

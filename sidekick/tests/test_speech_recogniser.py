@@ -81,10 +81,11 @@ def _install_fake_whisper(monkeypatch, segments):
     """Patch the WhisperRecogniser constructor to use the fake model."""
     fake = _FakeWhisperModel(segments)
 
-    def _fake_init(self, model_size=None, compute_type=None):
+    def _fake_init(self, model_size=None, compute_type=None, device=None):
         self.model = fake
         self.model_size = model_size or "small.en"
         self.compute_type = compute_type or "int8"
+        self.device = device or "cpu"
         self._last_text = ""
         self._repeat_count = 0
 
@@ -137,6 +138,57 @@ class TestCreateRecogniser:
             "no longer supported" in r.message and "azure" in r.message
             for r in caplog.records
         )
+
+
+# ---------------------------------------------------------------------------
+# Device / compute resolution
+# ---------------------------------------------------------------------------
+
+
+class TestResolveDeviceAndCompute:
+    def test_auto_uses_cuda_when_available(self, monkeypatch):
+        monkeypatch.delenv("SIDEKICK_WHISPER_DEVICE", raising=False)
+        monkeypatch.delenv("SIDEKICK_WHISPER_COMPUTE", raising=False)
+        monkeypatch.setattr(sr, "_cuda_available", lambda: True)
+        device, compute = sr._resolve_device_and_compute(None, None)
+        assert device == "cuda"
+        assert compute == "float16"
+
+    def test_auto_falls_back_to_cpu_without_gpu(self, monkeypatch):
+        monkeypatch.delenv("SIDEKICK_WHISPER_DEVICE", raising=False)
+        monkeypatch.delenv("SIDEKICK_WHISPER_COMPUTE", raising=False)
+        monkeypatch.setattr(sr, "_cuda_available", lambda: False)
+        device, compute = sr._resolve_device_and_compute(None, None)
+        assert device == "cpu"
+        assert compute == "int8"
+
+    def test_cuda_request_without_gpu_warns_and_uses_cpu(self, monkeypatch, caplog):
+        monkeypatch.setattr(sr, "_cuda_available", lambda: False)
+        with caplog.at_level(logging.WARNING, logger=sr.logger.name):
+            device, compute = sr._resolve_device_and_compute("cuda", None)
+        assert device == "cpu"
+        assert compute == "int8"
+        assert any("no CUDA GPU" in r.message for r in caplog.records)
+
+    def test_explicit_compute_is_honoured(self, monkeypatch):
+        monkeypatch.setattr(sr, "_cuda_available", lambda: True)
+        device, compute = sr._resolve_device_and_compute("auto", "int8_float16")
+        assert device == "cuda"
+        assert compute == "int8_float16"
+
+    def test_unknown_device_falls_back_to_cpu(self, monkeypatch):
+        monkeypatch.delenv("SIDEKICK_WHISPER_COMPUTE", raising=False)
+        device, compute = sr._resolve_device_and_compute("npu", None)
+        assert device == "cpu"
+        assert compute == "int8"
+
+    def test_env_device_override(self, monkeypatch):
+        monkeypatch.setenv("SIDEKICK_WHISPER_DEVICE", "cpu")
+        monkeypatch.delenv("SIDEKICK_WHISPER_COMPUTE", raising=False)
+        monkeypatch.setattr(sr, "_cuda_available", lambda: True)
+        device, compute = sr._resolve_device_and_compute(None, None)
+        assert device == "cpu"
+        assert compute == "int8"
 
 
 # ---------------------------------------------------------------------------
