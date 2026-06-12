@@ -96,185 +96,12 @@ def _init_session(config_name: str = "default"):
 
 
 # ---------------------------------------------------------------------------
-# Background processing loop
+# Background processing
 # ---------------------------------------------------------------------------
-
-
-async def _run_listen_loop():
-    """Background loop: capture audio → transcribe → batch → classify → queue → execute.
-
-    Transcription runs on every 5s audio chunk (real-time).
-    Classification is batched: transcribed lines accumulate for CLASSIFY_INTERVAL
-    seconds before being sent to the LLM classifier. This halves LLM calls while
-    keeping transcription responsive.
-
-    Auto-stops after SILENCE_TIMEOUT_SECS of no audio above threshold.
-    """
-    consecutive_errors = 0
-    MAX_CONSECUTIVE_ERRORS = 5
-    SILENCE_TIMEOUT_SECS = 60
-    # Use config value, with env var as override
-    CLASSIFY_INTERVAL = float(
-        os.environ.get(
-            "SIDEKICK_CLASSIFY_INTERVAL",
-            str(_state.config.sensitivity.analyst_interval_seconds),
-        )
-    )
-
-    # --- Heavy initialisation (runs in background, not in tool call) ---
-    try:
-        from sidekick.transcript.audio_capture import AudioCapture
-        from sidekick.transcript.speech_recogniser import create_recogniser
-    except ImportError as e:
-        _state.last_error = f"Missing live dependencies: {e}"
-        logger.error(_state.last_error)
-        return
-
-    try:
-        loop = asyncio.get_running_loop()
-        _state.recogniser = await loop.run_in_executor(
-            None, create_recogniser, _state.config.speech
-        )
-    except Exception as e:
-        _state.last_error = f"Failed to load speech model: {e}"
-        logger.exception(_state.last_error)
-        return
-
-    _state.audio_capture = AudioCapture()
-
-    devices = await loop.run_in_executor(None, _state.audio_capture.list_devices)
-    device_names = [d["name"] for d in devices] if devices else ["(none found)"]
-    logger.info("Loopback devices: %s", ", ".join(device_names))
-
-    # Transcript line buffer — accumulates between classifier calls
-    pending_lines: list = []
-    last_classify_time = time.monotonic()
-
-    # Speech-based auto-stop: tracks last time Whisper returned actual words.
-    # Audio energy alone (background hum, HVAC, holding music) does NOT reset
-    # this timer — only recognised speech does.
-    last_speech_time = time.monotonic()
-
-    # Session start — used to compute session-relative timestamps for each
-    # transcript line. Whisper segment offsets are chunk-relative (0..chunk_duration);
-    # we add elapsed-wall-clock-minus-chunk-duration so the printed timestamps
-    # reflect position within the meeting, not within the 5s buffer.
-    listen_started_at = time.monotonic()
-    chunk_duration = getattr(_state.audio_capture, "chunk_duration", 5.0)
-
-    # Short timeout for the audio iterator — we poll frequently so we can
-    # check the speech timer even while audio chunks keep arriving.
-    AUDIO_POLL_SECS = 10.0
-
-    audio_iter = None
-    try:
-        audio_iter = _state.audio_capture.start().__aiter__()
-        while True:
-            # Wait for next audio chunk.  Use a short poll interval so we
-            # can check the speech-based timer even when audio keeps flowing
-            # (e.g. background noise with no intelligible speech).
-            try:
-                audio_chunk = await asyncio.wait_for(
-                    audio_iter.__anext__(), timeout=AUDIO_POLL_SECS
-                )
-            except asyncio.TimeoutError:
-                # No audio chunk arrived — check speech timer
-                if time.monotonic() - last_speech_time >= SILENCE_TIMEOUT_SECS:
-                    if pending_lines:
-                        await engine.classify_and_dispatch(
-                            _state, pending_lines, consecutive_errors, _notify
-                        )
-                        pending_lines.clear()
-                    logger.info(
-                        "No speech detected for %ds — auto-stopping.",
-                        SILENCE_TIMEOUT_SECS,
-                    )
-                    _state.last_error = (
-                        f"Auto-stopped: no speech detected for {SILENCE_TIMEOUT_SECS}s. "
-                        f"Call stop for the summary, or listen to start a new session."
-                    )
-                    break
-                continue
-            except StopAsyncIteration:
-                break
-
-            try:
-                # chunk_start_offset = elapsed wall-clock since session start,
-                # minus one chunk_duration (the chunk we just received was
-                # recording during the preceding 5 seconds). Clamped at 0.
-                chunk_start_offset = max(
-                    0.0,
-                    time.monotonic() - listen_started_at - chunk_duration,
-                )
-                lines = await _state.recogniser.transcribe_chunk(
-                    audio_chunk, chunk_start_offset=chunk_start_offset
-                )
-                if lines:
-                    last_speech_time = time.monotonic()
-                    pending_lines.extend(lines)
-
-                # Check speech-based timeout even when audio is flowing
-                # (handles background hum / ambient noise with no words).
-                if time.monotonic() - last_speech_time >= SILENCE_TIMEOUT_SECS:
-                    if pending_lines:
-                        await engine.classify_and_dispatch(
-                            _state, pending_lines, consecutive_errors, _notify
-                        )
-                        pending_lines.clear()
-                    logger.info(
-                        "No recognised speech for %ds (audio still active) "
-                        "— auto-stopping.",
-                        SILENCE_TIMEOUT_SECS,
-                    )
-                    _state.last_error = (
-                        f"Auto-stopped: no recognised speech for "
-                        f"{SILENCE_TIMEOUT_SECS}s. "
-                        f"Call stop for the summary, or listen to start "
-                        f"a new session."
-                    )
-                    break
-
-                # Classify when enough time has passed
-                if not lines:
-                    continue
-                elapsed = time.monotonic() - last_classify_time
-                if elapsed >= CLASSIFY_INTERVAL:
-                    await engine.classify_and_dispatch(
-                        _state, pending_lines, consecutive_errors, _notify
-                    )
-                    pending_lines.clear()
-                    last_classify_time = time.monotonic()
-                    consecutive_errors = 0
-
-            except asyncio.CancelledError:
-                raise
-            except Exception as chunk_err:
-                consecutive_errors += 1
-                logger.exception(
-                    "Error processing chunk (%d/%d): %s",
-                    consecutive_errors, MAX_CONSECUTIVE_ERRORS, chunk_err,
-                )
-                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
-                    raise RuntimeError(
-                        f"Too many consecutive errors ({MAX_CONSECUTIVE_ERRORS}): {chunk_err}"
-                    ) from chunk_err
-
-    except asyncio.CancelledError:
-        logger.info("Listen loop cancelled.")
-    except Exception as e:
-        _state.last_error = f"Listen loop error: {type(e).__name__}: {e}"
-        logger.exception("Listen loop error.")
-    finally:
-        # Clean up resources on ANY exit (auto-stop, cancel, or error).
-        # Without this, the WASAPI capture thread and Whisper model leak.
-        if audio_iter is not None:
-            await audio_iter.aclose()
-        if _state.audio_capture is not None:
-            _state.audio_capture.stop()
-            logger.info("Audio capture cleaned up after listen loop exit.")
-        if _state.recogniser is not None:
-            _state.recogniser.close()
-            logger.info("Speech recogniser closed after listen loop exit.")
+#
+# The live audio loop (capture → transcribe → batch → classify → dispatch)
+# lives in ``sidekick.engine`` (``run_listen_loop``) so it can be tested with
+# fake capture/recogniser components. ``listen`` launches it as a task.
 
 
 def _notify(result) -> None:
@@ -445,7 +272,7 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
 
     # Start the background loop — model loading and audio capture happen
     # there so this tool returns instantly.
-    _state.listen_task = asyncio.create_task(_run_listen_loop())
+    _state.listen_task = asyncio.create_task(engine.run_listen_loop(_state, _notify))
 
     # Best-effort pre-warm of the primary LLM connection so the first
     # classifier/research call doesn't pay DNS + TLS setup cost.
@@ -849,8 +676,8 @@ async def stop() -> str:
     # Stop audio capture FIRST — this signals the capture thread to exit
     # cleanly before we cancel the listen task. Cancelling the task while
     # the capture thread is still writing to PyAudio can cause a C-level crash.
-    # Note: _run_listen_loop's finally block may have already called stop()
-    # and close() — these methods are safe to call multiple times.
+    # Note: engine.run_listen_loop's finally block may have already called
+    # stop() and close() — these methods are safe to call multiple times.
     if _state.audio_capture:
         _state.audio_capture.stop()
 
