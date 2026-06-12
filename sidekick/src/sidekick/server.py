@@ -38,6 +38,7 @@ from sidekick.actions.research import ResearchPipeline
 from sidekick.actions.prototype import PrototypePipeline
 from sidekick.output.session_log import SessionLog
 from sidekick.output import notifier
+from sidekick.output.deliverables import generate_deliverables, save_deliverables
 from sidekick import grounding
 from sidekick import engine
 from sidekick.prompt_budget import clip
@@ -666,11 +667,17 @@ async def status() -> str:
 
 
 @server.tool()
-async def stop() -> str:
+async def stop(deliverables: bool = True) -> str:
     """End the session and get a full meeting summary.
 
     Stops audio capture, generates a structured summary of all threads,
     research results, and action items, and saves the session log.
+
+    Args:
+        deliverables: When True (default), also generate a customer-ready
+            deliverables pack (draft follow-up email, action-item table, and
+            a "couldn't answer live" research batch) and save it alongside the
+            summary. Set False to skip the extra LLM call.
     """
 
     # Stop audio capture FIRST — this signals the capture thread to exit
@@ -704,6 +711,7 @@ async def stop() -> str:
 
     summary = "No active session."
     saved_files: list[str] = []
+    deliverables_block = ""
     if _state.session_log and _state.context:
         summary = _state.session_log.generate_summary(_state.context)
         path = _state.session_log.save_to_disk()
@@ -717,10 +725,27 @@ async def stop() -> str:
         if mp:
             saved_files.append(str(mp))
 
+        # Post-call deliverables pack (email draft + action items + follow-up
+        # research batch). Wrapped so a failure never breaks the summary.
+        if deliverables and _state.config:
+            try:
+                deliverables_block = await generate_deliverables(
+                    _state.session_log, _state.context, _state.config
+                )
+                dp = save_deliverables(deliverables_block, _state.config)
+                if dp:
+                    saved_files.append(str(dp))
+            except Exception:
+                logger.exception("Deliverables generation failed")
+                deliverables_block = ""
+
     if saved_files:
         summary += "\n\n**Saved files:**\n" + "\n".join(
             f"- {f}" for f in saved_files
         )
+
+    if deliverables_block:
+        summary += "\n\n" + deliverables_block
 
     # Reset state
     _state.listen_task = None
