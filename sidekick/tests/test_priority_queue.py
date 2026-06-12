@@ -244,6 +244,46 @@ class TestProcessReady:
         assert results == []
         assert q.fast_lane.items[0].status == "expired"
 
+    @pytest.mark.asyncio
+    async def test_notify_surfaces_lead_early_and_flags_result(self):
+        # When notify is passed, a research item that streams a lead answer
+        # fires notify early and the final result is flagged early_notified
+        # so the caller skips a duplicate notification.
+        class _StreamingResearch(_FakeResearch):
+            async def execute_direct(self, **kwargs):
+                self.calls += 1
+                on_lead = kwargs.get("on_lead")
+                if on_lead is not None:
+                    on_lead("Lead answer.")
+                return self.result
+
+        q = _make_queue()
+        await q.enqueue(_item())
+        research = _StreamingResearch(_FakeResult(answer="Full answer."))
+        notified = []
+        results = await q.process_ready(
+            research=research, prototype=None, context=None,
+            notify=notified.append,
+        )
+        assert len(results) == 1
+        assert results[0].early_notified is True
+        assert len(notified) == 1
+        assert notified[0].answer == "Lead answer."
+        assert notified[0].early_notified is True
+
+    @pytest.mark.asyncio
+    async def test_no_notify_leaves_result_unflagged(self):
+        # Default path (notify=None) never fires early and leaves the result
+        # unflagged — byte-identical to prior behaviour.
+        q = _make_queue()
+        await q.enqueue(_item())
+        research = _FakeResearch(_FakeResult(answer="A"))
+        results = await q.process_ready(
+            research=research, prototype=None, context=None,
+        )
+        assert results[0].early_notified is False
+
+
 
 # ---------------------------------------------------------------------------
 # Expiry

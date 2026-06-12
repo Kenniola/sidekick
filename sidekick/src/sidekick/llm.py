@@ -412,6 +412,169 @@ async def call_llm(
 
 
 # ---------------------------------------------------------------------------
+# Streaming API — yields content deltas for perceived-latency wins
+# ---------------------------------------------------------------------------
+#
+# MCP stdio returns a single tool result, so streaming cannot push partial
+# tokens into the Copilot Chat window. The value is on the *background*
+# research path: stream_llm lets the engine surface a finding's lead answer
+# (answer-card toast) as soon as it is generated, rather than waiting for the
+# full synthesis + sources block. See SIDEKICK_ASSESSMENT.md §8b.
+
+
+async def _stream_openai_compatible(client, url, headers, body, timeout):
+    """Yield ``delta.content`` strings from an OpenAI-compatible SSE stream."""
+    async with client.stream(
+        "POST", url, headers=headers, json=body, timeout=timeout
+    ) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            data = line[len("data:"):].strip()
+            if data == "[DONE]":
+                break
+            try:
+                obj = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            delta = (
+                obj.get("choices", [{}])[0].get("delta", {}).get("content")
+            )
+            if delta:
+                yield delta
+
+
+async def _stream_copilot(model, system_prompt, user_prompt, timeout):
+    """Stream via the GitHub Copilot API (Enterprise subscription)."""
+    token = await _get_gh_token()
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": True,
+    }
+    client = _get_copilot_client(timeout)
+    async for delta in _stream_openai_compatible(
+        client,
+        _COPILOT_URL,
+        {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Copilot-Integration-Id": "vscode-chat",
+        },
+        body,
+        timeout,
+    ):
+        yield delta
+
+
+async def _stream_github_models(model, system_prompt, user_prompt, timeout):
+    """Stream via the GitHub Models API (free tier)."""
+    token = await _get_gh_token()
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": True,
+    }
+    client = _get_github_models_client(timeout)
+    async for delta in _stream_openai_compatible(
+        client,
+        _GITHUB_MODELS_URL,
+        {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        body,
+        timeout,
+    ):
+        yield delta
+
+
+_STREAM_PROVIDERS = {
+    "copilot": _stream_copilot,
+    "github_models": _stream_github_models,
+}
+
+
+async def stream_llm(
+    system_prompt: str,
+    user_prompt: str,
+    timeout: float = 60.0,
+    tier: str = "standard",
+    chain: list[tuple[str, str]] | None = None,
+):
+    """Stream an LLM completion, yielding content deltas as they arrive.
+
+    Mirrors :func:`call_llm`'s tier routing, retry, and provider fallback.
+    Retry/fallback applies only *before* the first delta is emitted — once any
+    output has been yielded, a mid-stream failure propagates (re-running a
+    provider would duplicate already-yielded text). Callers that need a
+    guaranteed full result should fall back to :func:`call_llm` on error.
+
+    Yields:
+        ``str`` content deltas in order.
+
+    Raises:
+        RuntimeError: if every provider fails before yielding any output.
+    """
+    if chain is None:
+        if _active_models is not None:
+            chain = _active_models.chain(tier)
+        else:
+            chain = _TIER_CONFIG.get(tier, _TIER_CONFIG["standard"])
+    last_error: Exception | None = None
+
+    for provider_name, model in chain:
+        provider_fn = _STREAM_PROVIDERS.get(provider_name)
+        if not provider_fn:
+            continue
+
+        for attempt in range(_MAX_RETRIES):
+            yielded = False
+            try:
+                async for delta in provider_fn(
+                    model, system_prompt, user_prompt, timeout
+                ):
+                    yielded = True
+                    yield delta
+                return
+
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                if yielded:
+                    raise  # partial output emitted — don't risk duplication
+                status = e.response.status_code
+                if status == 429 or status >= 500:
+                    await asyncio.sleep(_BACKOFF_BASE * (2 ** attempt))
+                    continue
+                break  # non-retryable 4xx → next provider
+
+            except (httpx.TimeoutException, httpx.ConnectError) as e:
+                last_error = e
+                if yielded:
+                    raise
+                await asyncio.sleep(_BACKOFF_BASE * (2 ** attempt))
+                continue
+
+            except Exception as e:
+                last_error = e
+                if yielded:
+                    raise
+                break
+
+    raise RuntimeError(
+        f"All LLM providers failed (stream) for tier={tier!r}. "
+        f"Last error: {last_error}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Vision API — multimodal image analysis
 # ---------------------------------------------------------------------------
 

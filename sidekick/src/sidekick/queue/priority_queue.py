@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 from sidekick.analyst.classifier import ActionItem
 from sidekick.config import SidekickConfig
@@ -25,6 +26,9 @@ class ActionResult:
     confidence: str = "medium"
     priority: str = "medium"
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Set when an early "lead answer" was already surfaced via the notify
+    # callback during streaming, so the caller skips a duplicate final notify.
+    early_notified: bool = False
 
     def format(self) -> str:
         return self.answer
@@ -170,8 +174,16 @@ class PriorityQueue:
 
     async def process_ready(
         self, research, prototype, context, domains: list[str] | None = None,
+        notify: Callable[[object], None] | None = None,
     ) -> list[ActionResult]:
-        """Process pending items across all lanes. Returns completed results."""
+        """Process pending items across all lanes. Returns completed results.
+
+        When *notify* is supplied, research-type items stream their synthesis
+        and surface the lead answer early via *notify*; the corresponding
+        result is flagged ``early_notified`` so the caller skips a duplicate
+        final notification. When *notify* is ``None`` the behaviour is the
+        original non-streaming path.
+        """
         results: list[ActionResult] = []
 
         for lane in [self.fast_lane, self.standard_lane, self.deep_lane]:
@@ -187,7 +199,7 @@ class PriorityQueue:
 
                 try:
                     result = await asyncio.wait_for(
-                        self._execute(qi, research, prototype, context, domains),
+                        self._execute(qi, research, prototype, context, domains, notify),
                         timeout=lane.timeout,
                     )
                     qi.status = "done"
@@ -208,11 +220,35 @@ class PriorityQueue:
     async def _execute(
         self, qi: QueueItem, research, prototype, context,
         domains: list[str] | None = None,
+        notify: Callable[[object], None] | None = None,
     ) -> ActionResult:
         """Route a queue item to the correct action pipeline."""
         item = qi.item
         action_type = item.type
         tier = "deep"
+
+        # When notify is provided, surface the lead answer early via a
+        # streaming callback. ``early_fired`` records whether it fired so the
+        # final ActionResult can be flagged to avoid a duplicate notify.
+        early_fired = {"v": False}
+
+        def _make_on_lead(result_type: str):
+            if notify is None:
+                return None
+
+            def _on_lead(lead: str) -> None:
+                early_fired["v"] = True
+                notify(ActionResult(
+                    question=item.question,
+                    action_type=result_type,
+                    answer=lead,
+                    sources=[],
+                    confidence="medium",
+                    priority=item.priority,
+                    early_notified=True,
+                ))
+
+            return _on_lead
 
         if action_type == "research":
             result = await research.execute_direct(
@@ -221,6 +257,7 @@ class PriorityQueue:
                 context=context,
                 tier=tier,
                 domains=domains,
+                on_lead=_make_on_lead("research"),
             )
             return ActionResult(
                 question=item.question,
@@ -229,6 +266,7 @@ class PriorityQueue:
                 sources=getattr(result, "sources", []),
                 confidence=getattr(result, "confidence", "medium"),
                 priority=item.priority,
+                early_notified=early_fired["v"],
             )
         elif action_type in ("roadmap", "sizing", "diagnostic", "action_item"):
             # Route through research pipeline — these benefit from
@@ -239,6 +277,7 @@ class PriorityQueue:
                 context=context,
                 tier=tier,
                 domains=domains,
+                on_lead=_make_on_lead(action_type),
             )
             return ActionResult(
                 question=item.question,
@@ -247,6 +286,7 @@ class PriorityQueue:
                 sources=getattr(result, "sources", []),
                 confidence=getattr(result, "confidence", "medium"),
                 priority=item.priority,
+                early_notified=early_fired["v"],
             )
         elif action_type == "prototype":
             result = await prototype.execute_direct(

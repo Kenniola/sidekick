@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 import httpx
 
-from sidekick.llm import call_llm
+from sidekick.llm import call_llm, stream_llm
 
 logger = logging.getLogger(__name__)
+
+# Boundary between the lead answer (read aloud on the call) and the trailing
+# "Sources:" block. Used to surface the lead early on the streaming path.
+_SOURCES_RE = re.compile(r"\n\s*Sources?\b", re.IGNORECASE)
+
+
+def _lead_answer(text: str) -> str:
+    """Return the lead answer — text before any ``Sources:`` block, stripped."""
+    return _SOURCES_RE.split(text, maxsplit=1)[0].strip()
 
 SYNTHESIS_SYSTEM_PROMPT = """You are a {domain_scope} technical research assistant \
 embedded in a live customer engagement. Your answers are read aloud by the \
@@ -163,12 +174,17 @@ class ResearchPipeline:
         context=None,
         tier: str = "deep",
         domains: list[str] | None = None,
+        on_lead: Callable[[str], None] | None = None,
     ) -> ResearchResult:
         """Execute a research query directly (not from queue).
 
         Args:
             tier: LLM tier for synthesis — 'deep' (claude-opus-4.7) by default.
             domains: Customer domains for scoping the search query.
+            on_lead: Optional callback fired once with the lead answer as soon
+                as it streams in (before the Sources block). When provided,
+                synthesis streams; when ``None`` (default) it uses the standard
+                non-streaming path — byte-identical to prior behaviour.
         """
         # Rewrite the raw transcript question into a focused search query
         search_query = await self._rewrite_search_query(question, domains)
@@ -229,11 +245,16 @@ Cite the URLs from web results where they support your answer."""
         domain_scope = ", ".join(domains) if domains else "Microsoft Fabric"
         system_prompt = SYNTHESIS_SYSTEM_PROMPT.format(domain_scope=domain_scope)
 
-        answer = await call_llm(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            tier=tier,
-        )
+        if on_lead is not None:
+            answer = await self._synthesise_streaming(
+                system_prompt, user_prompt, tier, on_lead
+            )
+        else:
+            answer = await call_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                tier=tier,
+            )
 
         # Extract source URLs from web results for the ResearchResult
         sources = self._extract_urls(web_context)
@@ -244,6 +265,60 @@ Cite the URLs from web results where they support your answer."""
             sources=sources,
             confidence="medium",
         )
+
+    async def _synthesise_streaming(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        tier: str,
+        on_lead: Callable[[str], None],
+    ) -> str:
+        """Stream the synthesis, firing ``on_lead`` once the lead answer is ready.
+
+        Falls back to a single non-streaming :func:`call_llm` if streaming
+        fails, so the result is never lost. ``on_lead`` is fired at most once.
+        """
+        chunks: list[str] = []
+        lead_fired = False
+
+        def _maybe_fire_lead(force: bool = False) -> None:
+            nonlocal lead_fired
+            if lead_fired:
+                return
+            acc = "".join(chunks)
+            lead = _lead_answer(acc)
+            # Fire when the Sources block starts, or once we have a complete
+            # lead sentence of reasonable length, or on a forced final flush.
+            ready = (
+                _SOURCES_RE.search(acc) is not None
+                or (len(lead) >= 40 and lead.rstrip().endswith((".", "!", "?")))
+            )
+            if (ready or force) and lead:
+                try:
+                    on_lead(lead)
+                except Exception:  # noqa: BLE001 — callback must never break synthesis
+                    logger.debug("on_lead callback raised", exc_info=True)
+                lead_fired = True
+
+        try:
+            async for delta in stream_llm(
+                system_prompt=system_prompt, user_prompt=user_prompt, tier=tier
+            ):
+                chunks.append(delta)
+                _maybe_fire_lead()
+            _maybe_fire_lead(force=True)
+            return "".join(chunks)
+        except Exception as e:  # noqa: BLE001 — degrade to non-streaming
+            logger.warning("Streaming synthesis failed (%s); using call_llm", e)
+            answer = await call_llm(
+                system_prompt=system_prompt, user_prompt=user_prompt, tier=tier
+            )
+            if not lead_fired and answer.strip():
+                try:
+                    on_lead(_lead_answer(answer))
+                except Exception:  # noqa: BLE001
+                    logger.debug("on_lead callback raised", exc_info=True)
+            return answer
 
     async def _rewrite_search_query(
         self, question: str, domains: list[str] | None = None,

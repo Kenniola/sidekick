@@ -100,6 +100,7 @@ async def classify_and_dispatch(
         prototype=state.prototype,
         context=state.context,
         domains=state.config.domains if state.config else None,
+        notify=notify,
     )
     for result in results:
         state.session_log.record(result)
@@ -109,9 +110,12 @@ async def classify_and_dispatch(
             result.question[:60],
         )
 
-    # Notify for new findings (sound alert + log file)
+    # Notify for new findings (sound alert + log file). Results whose lead
+    # answer was already surfaced early via streaming (``early_notified``) are
+    # skipped here to avoid a duplicate toast.
     for result in results:
-        notify(result)
+        if not getattr(result, "early_notified", False):
+            notify(result)
 
 
 # ---------------------------------------------------------------------------
