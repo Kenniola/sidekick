@@ -289,11 +289,11 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 - [x] LLM tier routing + fallback (mock httpx) — 13 tests in `tests/test_llm_routing.py`
 - [x] Config deep-merge; classifier JSON parse; session summary — 30 tests across `tests/test_config_merge.py`, `tests/test_classifier_parse.py`, `tests/test_session_log.py`
 
-**Phase 4 — Killer features (demo-focused; tight scope)**
-- [ ] Answer-card toast with answer + source (§9.1)
-- [ ] Post-call deliverables generator: email draft + action-item table + couldn't-answer-live research batch (§9.3)
-- [ ] Streaming output for perceived latency (§8b)
-- [ ] *(timeboxed spike, optional)* NPU/GPU Whisper + VAD gating (§8a)
+**Phase 4 — Killer features (demo-focused; tight scope) ✅ COMPLETE**
+- [x] Answer-card toast with answer + source (§9.1) — `notifier` carries `answer`/`source`; `sidekick-notify` 0.2.0 shows the answer headline + Open Source button
+- [x] Post-call deliverables generator: email draft + action-item table + couldn't-answer-live research batch (§9.3) — `output/deliverables.py`, wired into `stop(deliverables=True)`
+- [x] Streaming output for perceived latency (§8b) — `llm.stream_llm()` + opt-in `on_lead` progressive answer-card on the background research path (MCP stdio can't stream into Chat — documented)
+- [x] *(timeboxed spike, optional)* NPU/GPU Whisper + VAD gating (§8a) — `device: auto|cpu|cuda` auto-detect (CTranslate2 = CUDA GPU/CPU only, no NPU; documented); VAD already on
 
 ---
 
@@ -307,4 +307,4 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 
 ---
 
-*Phases 0–3 complete (commit `b9b4132`, 179 tests passing). Phase 4 next.*
+*Phases 0–4 complete (commit `9580b3d`, 228 tests passing).*
