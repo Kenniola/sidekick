@@ -105,6 +105,7 @@ class SpeechRecogniser(Protocol):
         audio: np.ndarray,
         sample_rate: int = 16_000,
         chunk_start_offset: float = 0.0,
+        initial_prompt: str | None = None,
     ) -> list[TranscriptLine]: ...
 
     def close(self) -> None: ...
@@ -181,6 +182,7 @@ class WhisperRecogniser:
         audio: np.ndarray,
         sample_rate: int = 16_000,
         chunk_start_offset: float = 0.0,
+        initial_prompt: str | None = None,
     ) -> list[TranscriptLine]:
         """Transcribe a single audio chunk.
 
@@ -192,6 +194,9 @@ class WhisperRecogniser:
                 started up to the **start** of this chunk. Added to every
                 segment offset so transcript timestamps reflect the position
                 within the meeting, not within the 5-second chunk.
+            initial_prompt: optional domain-vocabulary hint (Phase 5b) biasing
+                Whisper toward expected proper nouns/jargon. ``None`` preserves
+                Whisper's default behaviour.
 
         Returns:
             List of ``TranscriptLine`` with session-relative VTT timestamps.
@@ -204,6 +209,7 @@ class WhisperRecogniser:
             beam_size=5,
             language="en",
             vad_filter=True,
+            initial_prompt=initial_prompt,
         )
 
         lines: list[TranscriptLine] = []

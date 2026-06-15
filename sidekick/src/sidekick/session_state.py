@@ -40,6 +40,10 @@ class SessionState:
     recogniser: object | None = None           # SpeechRecogniser instance
     listen_task: "asyncio.Task | None" = None
 
+    # Derived Whisper vocabulary prior (Phase 5b) — seeded from config/grounding
+    # and adapted in-session from LLM-corrected key_facts/research.
+    vocabulary: object | None = None           # transcript.vocabulary.Vocabulary
+
     # Error tracking for background loops
     last_error: str | None = None
 

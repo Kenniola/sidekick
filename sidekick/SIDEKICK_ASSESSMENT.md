@@ -308,3 +308,65 @@ It is **not** "just an LLM chat window" — a chat window can't hear the call, c
 ---
 
 *Phases 0–4 complete (commit `9580b3d`, 228 tests passing).*
+
+---
+
+## 13. Transcription Accuracy — Field Evidence (CCG call, 15 Jun 2026)
+
+> **Objective:** fine-tune Sidekick's listen→transcribe path to a materially **higher degree of accuracy**, validated against ground truth.
+
+A live HMRC CCG deep-dive (32m12s) was captured by Sidekick **and** by Microsoft Teams in parallel, giving a rare ground-truth comparison. Sidekick output: `transcript_20260615_130514.txt` (`small.en` / `int8` / CPU). Ground truth: the Teams speaker-attributed transcript. Findings:
+
+### 13.1 What works
+- Downstream research answers were strong, grounded, and **declined to invent** unknown system names (correct client-facing behaviour).
+- VAD + repetition guard kept the transcript free of looping hallucinations.
+
+### 13.2 Defects found (ranked by impact on accuracy & usefulness)
+
+| # | Defect | Evidence | Root cause |
+|---|--------|----------|-----------|
+| **D1** | **Real-time backlog / timestamp drift** | Content at Teams **18:15** stamped **43:25**; summary reports **"56 minutes"** for a **32-minute** meeting | `engine.py` stamps lines with **wall-clock elapsed since `listen` start** (`time.monotonic() - listen_started_at - chunk_duration`), not audio position. CPU `small.en` runs slower than real-time and the audio queue is **unbounded** (`audio_capture.py: asyncio.Queue()`), so a backlog accumulates and the co-pilot drifts ~25 min behind. |
+| **D2** | **Proper-noun / jargon errors** | "Denodo"→"the node/de Nodo/Denoto"; "Gen 1"→"gentlemen"; "Andy Esdale"→"Andy Estel"; "Business Objects"→"this object"; "management information/MI"→"module information"; "damn site faster"→"campsite faster"; "Trystan"→"Tristan/Kristen"; "Bharti"→"Barty" | `small.en` has no domain prior; Whisper receives no `initial_prompt`/hotwords even though Sidekick already holds the right vocabulary in its grounding context and live research. Proper nouns and acronyms — exactly the terms read back to the client — are the weakest area. |
+| **D3** | **No speaker separation** | Every line tagged `(audio)`; Teams cleanly separated 4 speakers | `speaker` hardcoded `"(audio)"`; no diarization and local mic not mixed in, so the consultant's own questions are absent (loopback captures remote audio only). |
+| **D4** | **Missing opening ~1m20s** | Sidekick line 1 `[0:00:00]` maps to Teams **1:22**; the customer's framing/goal is lost | Capture starts after model load / first-chunk warm-up; no pre-roll buffer. |
+| **D5** | **Mid-sentence fragmentation** | Hard 5 s cuts split sentences across lines with no repair | Fixed 5 s chunk boundary, no overlap, `condition_on_previous_text` not used → Whisper has no cross-chunk context. |
+
+---
+
+## 14. Phase 5 — Transcription Accuracy Fine-Tuning
+
+Test-first, one commit per slice, mirror to OneDrive, zero regression, server restart to pick up runtime changes. Sequenced **highest accuracy-per-effort first**. CTranslate2 constraint acknowledged throughout: **GPU/CPU only, no NPU**.
+
+**Slice 5a — Sample-based timestamps + bounded queue (fixes D1)** — *highest value*
+- Track audio position from **samples actually consumed** (cumulative processed chunk duration), not wall-clock; pass that as `chunk_start_offset`. Fixes drift and the "56 min" bug.
+- Bound the capture queue with a **drop-to-latest-when-behind** policy so live suggestions stay current under CPU pressure (saved transcript may sacrifice some fidelity — acceptable trade, documented).
+- Tests: monotonic non-drifting offsets across N chunks; queue caps and drops oldest when full.
+
+**Slice 5b — Derived, self-maintaining domain prior for Whisper (fixes D2)** — *cheapest big accuracy win, zero hardcoding*
+
+A hand-curated glossary is rejected: it is hardcoding by another name — it rots, it must be authored per customer, and it only ever covers terms someone remembered. Instead, Sidekick **derives** Whisper's `initial_prompt`/`hotwords` from material it *already ingests*, and lets it **improve over the call**. Two complementary sources, no hand-list:
+
+1. **Seed prior from existing grounding (no new input).** `grounding.build_grounding_context` already loads the customer `domains`, `description`, and the `.github/instructions/` engagement files. Extract the salient terms from that text Sidekick is already reading — capitalised tokens, domain phrases, product/proper nouns — and use them as the starting `initial_prompt`. The prior is whatever the engagement context already contains; nothing is authored for Whisper specifically.
+2. **Adaptive in-session vocabulary (self-reinforcing).** As the call runs, harvest proper nouns from the two streams that are *already corrected by the LLM from context* — classified thread `key_facts` and research results (the analyst writes "Denodo" correctly even when Whisper heard "de Nodo", because it reasons from grounding). Feed those terms back as the rolling `initial_prompt` for subsequent chunks. The longer the meeting runs, the better proper-noun recognition gets — "Denodo" is mangled once, surfaces correctly in research/threads, then becomes a hotword for every later chunk.
+
+- **Implementation:** a small `vocabulary.py` that (a) builds the seed set from the grounding string at `listen` time and (b) exposes an `update(key_facts, research_terms)` called from `classify_and_dispatch`; `WhisperRecogniser.transcribe_chunk` reads the current term set as `initial_prompt`. No `glossary:` config key, no per-customer authoring.
+- **Tests:** seed terms extracted from a sample grounding block; in-session `update` promotes a term so a later chunk receives it as prior; empty grounding + empty session = current behaviour (no prior).
+
+> **Alternative considered — LLM post-correction.** A fast-tier pass that rewrites proper nouns from context (the deleted `transcript_correction` module did this). Rejected as the *primary* lever: it adds a per-chunk LLM round-trip and latency that conflicts with 5a, and corrects the *saved* text without improving the live recognition. The derived prior fixes recognition at the source with no extra network cost. Keep post-correction as an optional, off-by-default polish on the saved transcript only.
+
+**Slice 5c — Capture-start latency / pre-roll (fixes D4)**
+- Pre-warm the Whisper model fully **before** signalling capture-ready, and/or keep a short rolling pre-roll buffer so the first ~1–2 min is not lost.
+- Tests: first emitted offset ≈ 0 with a pre-warmed model; no audio dropped before first transcribe call.
+
+**Slice 5d — Local mic + loopback mix with 2-way attribution (mitigates D3)**
+- Mix local microphone with WASAPI loopback; tag `(me)` vs `(remote)` to recover the consultant's half and give crude attribution essentially free.
+- Tests: two synthetic streams labelled correctly; loopback-only path unchanged when no mic configured.
+
+**Slice 5e — Chunk-boundary coherence (fixes D5)**
+- Overlapping windows (~1 s) + `condition_on_previous_text`, or re-segment on VAD silence instead of a hard 5 s cut, to stop mid-sentence splits.
+- Sequenced last — interacts with 5a latency; validate no regression in drift.
+
+**Model-size note (gated, not a committed slice):** `small.en`→`medium.en`/`large-v3` improves jargon accuracy but worsens CPU latency (conflicts with 5a). Gate behind the existing `device: auto` detection — select a larger model **only** when CUDA is present; otherwise stay on `small.en` + the derived prior (5b), which addresses most D2 errors without the latency cost.
+
+**Expected accuracy outcome:** 5a restores temporal correctness and live relevance; 5b eliminates the recurring proper-noun/jargon failures (the most client-visible errors) by *deriving and adapting* the prior rather than hardcoding it; 5c–5e recover lost content and readability. Together these target the gap between Sidekick's `(audio)`-only, drifting transcript and the Teams ground truth — without a model change on CPU hardware.
+

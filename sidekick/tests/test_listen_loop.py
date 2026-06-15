@@ -32,9 +32,15 @@ class FakeRecogniser:
         self.raise_exc = raise_exc
         self.closed = False
         self.calls = 0
+        self.offsets: list[float] = []
+        self.prompts: list[str | None] = []
 
-    async def transcribe_chunk(self, audio, chunk_start_offset=0.0):
+    async def transcribe_chunk(
+        self, audio, chunk_start_offset=0.0, initial_prompt=None
+    ):
         self.calls += 1
+        self.offsets.append(chunk_start_offset)
+        self.prompts.append(initial_prompt)
         if self.raise_exc is not None:
             raise self.raise_exc
         return list(self._lines)
@@ -312,3 +318,104 @@ class TestInitialiseCapture:
         assert ok is True
         assert state.recogniser is rec
         assert isinstance(state.audio_capture, FakeAudioCapture)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5a — sample-based audio offset propagation
+# ---------------------------------------------------------------------------
+
+
+class _OffsetAudioCapture(FakeAudioCapture):
+    """Capture that exposes a per-chunk ``last_chunk_offset`` like the real one."""
+
+    def __init__(self, offsets, **kw):
+        super().__init__(chunks=[f"c{i}" for i in range(len(offsets))], **kw)
+        self._offsets = list(offsets)
+        self.last_chunk_offset = 0.0
+
+    async def __anext__(self):
+        chunk = await super().__anext__()
+        self.last_chunk_offset = self._offsets[self._idx - 1]
+        return chunk
+
+
+class TestSampleBasedOffset:
+    @pytest.mark.asyncio
+    async def test_uses_capture_offset_when_available(self, monkeypatch):
+        # Capture-provided offsets (e.g. 15s gaps over silence) must reach the
+        # recogniser verbatim — NOT the index*chunk_duration fallback (0,5,10).
+        monkeypatch.setenv("SIDEKICK_CLASSIFY_INTERVAL", "0")
+        monkeypatch.setattr(engine, "SILENCE_TIMEOUT_SECS", 10_000)
+        monkeypatch.setattr(engine, "classify_and_dispatch", AsyncMock())
+
+        rec = FakeRecogniser(lines_per_chunk=["L"])
+        cap = _OffsetAudioCapture(offsets=[0.0, 15.0, 30.0])
+        state = _make_state(rec, cap)
+
+        await engine._consume_audio(state, lambda r: None)
+
+        assert rec.offsets == [0.0, 15.0, 30.0]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_index_offset_without_capture_offset(self, monkeypatch):
+        # FakeAudioCapture exposes no last_chunk_offset → index*chunk_duration.
+        monkeypatch.setenv("SIDEKICK_CLASSIFY_INTERVAL", "0")
+        monkeypatch.setattr(engine, "SILENCE_TIMEOUT_SECS", 10_000)
+        monkeypatch.setattr(engine, "classify_and_dispatch", AsyncMock())
+
+        rec = FakeRecogniser(lines_per_chunk=["L"])
+        cap = FakeAudioCapture(chunks=["c1", "c2"])  # chunk_duration = 5.0
+        state = _make_state(rec, cap)
+
+        await engine._consume_audio(state, lambda r: None)
+
+        assert rec.offsets == [0.0, 5.0]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5b — derived vocabulary prior propagation
+# ---------------------------------------------------------------------------
+
+
+class _FakeVocab:
+    def __init__(self, prompt):
+        self._prompt = prompt
+        self.updated: list = []
+
+    def initial_prompt(self):
+        return self._prompt
+
+    def update(self, texts):
+        self.updated.append(texts)
+
+
+class TestVocabularyPrior:
+    @pytest.mark.asyncio
+    async def test_passes_initial_prompt_from_vocabulary(self, monkeypatch):
+        monkeypatch.setenv("SIDEKICK_CLASSIFY_INTERVAL", "0")
+        monkeypatch.setattr(engine, "SILENCE_TIMEOUT_SECS", 10_000)
+        monkeypatch.setattr(engine, "classify_and_dispatch", AsyncMock())
+
+        rec = FakeRecogniser(lines_per_chunk=["L"])
+        cap = FakeAudioCapture(chunks=["c1"])
+        state = _make_state(rec, cap)
+        state.vocabulary = _FakeVocab("Glossary: Denodo, Microsoft Fabric.")
+
+        await engine._consume_audio(state, lambda r: None)
+
+        assert rec.prompts == ["Glossary: Denodo, Microsoft Fabric."]
+
+    @pytest.mark.asyncio
+    async def test_no_vocabulary_passes_none_prompt(self, monkeypatch):
+        monkeypatch.setenv("SIDEKICK_CLASSIFY_INTERVAL", "0")
+        monkeypatch.setattr(engine, "SILENCE_TIMEOUT_SECS", 10_000)
+        monkeypatch.setattr(engine, "classify_and_dispatch", AsyncMock())
+
+        rec = FakeRecogniser(lines_per_chunk=["L"])
+        cap = FakeAudioCapture(chunks=["c1"])
+        state = _make_state(rec, cap)
+        state.vocabulary = None
+
+        await engine._consume_audio(state, lambda r: None)
+
+        assert rec.prompts == [None]

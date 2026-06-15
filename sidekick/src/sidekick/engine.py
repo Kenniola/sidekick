@@ -117,6 +117,24 @@ async def classify_and_dispatch(
         if not getattr(result, "early_notified", False):
             notify(result)
 
+    # Adapt the Whisper vocabulary prior (Phase 5b) from LLM-corrected text:
+    # thread/context key_facts and research answers spell proper nouns
+    # correctly even when Whisper misheard them, so feeding them back improves
+    # recognition of those terms in subsequent chunks.
+    if state.vocabulary is not None:
+        try:
+            corrected: list[str] = []
+            if state.context is not None:
+                corrected.extend(getattr(state.context, "key_facts", []) or [])
+                for thread in (getattr(state.context, "threads", {}) or {}).values():
+                    corrected.extend(getattr(thread, "key_facts", []) or [])
+            for result in results:
+                corrected.append(getattr(result, "question", "") or "")
+                corrected.append(getattr(result, "answer", "") or "")
+            state.vocabulary.update(corrected)
+        except Exception as e:  # noqa: BLE001 — prior is best-effort, never fatal
+            logger.debug("Vocabulary update skipped: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Live audio loop (Phase 3 — extracted from server._run_listen_loop)
@@ -168,6 +186,20 @@ async def _initialise_capture(state: SessionState) -> bool:
 
     state.audio_capture = AudioCapture()
 
+    # Seed the derived Whisper vocabulary prior (Phase 5b) from the same
+    # engagement inputs that feed grounding — always available at listen time.
+    try:
+        from sidekick.transcript.vocabulary import Vocabulary, config_seed_text
+
+        vocab = Vocabulary()
+        vocab.seed(config_seed_text(state.config))
+        if isinstance(getattr(state, "grounding_cache", None), str):
+            vocab.seed(state.grounding_cache)
+        state.vocabulary = vocab
+        logger.info("Whisper vocabulary prior seeded (%d terms).", len(vocab))
+    except Exception as e:  # noqa: BLE001 — prior is best-effort, never fatal
+        logger.debug("Vocabulary seed skipped: %s", e)
+
     devices = await loop.run_in_executor(None, state.audio_capture.list_devices)
     device_names = [d["name"] for d in devices] if devices else ["(none found)"]
     logger.info("Loopback devices: %s", ", ".join(device_names))
@@ -202,12 +234,14 @@ async def _consume_audio(state: SessionState, notify: Callable[[object], None]) 
     # this timer — only recognised speech does.
     last_speech_time = time.monotonic()
 
-    # Session start — used to compute session-relative timestamps for each
-    # transcript line. Whisper segment offsets are chunk-relative (0..chunk_duration);
-    # we add elapsed-wall-clock-minus-chunk-duration so the printed timestamps
-    # reflect position within the meeting, not within the 5s buffer.
-    listen_started_at = time.monotonic()
+    # Per-chunk audio position (5a). The capture exposes ``last_chunk_offset``
+    # derived from audio actually captured, so transcript timestamps reflect
+    # the position within the meeting even when transcription falls behind
+    # real time (fixes the wall-clock drift that inflated a 32-min meeting to
+    # "56 minutes"). A local index estimate is used only when the capture does
+    # not expose an offset (e.g. test doubles).
     chunk_duration = getattr(state.audio_capture, "chunk_duration", 5.0)
+    chunk_index = 0
 
     audio_iter = None
     try:
@@ -242,15 +276,25 @@ async def _consume_audio(state: SessionState, notify: Callable[[object], None]) 
                 break
 
             try:
-                # chunk_start_offset = elapsed wall-clock since session start,
-                # minus one chunk_duration (the chunk we just received was
-                # recording during the preceding 5 seconds). Clamped at 0.
-                chunk_start_offset = max(
-                    0.0,
-                    time.monotonic() - listen_started_at - chunk_duration,
+                # Sample-based audio position (5a): prefer the capture's
+                # per-chunk offset (immune to processing backlog); fall back to
+                # an index estimate when the capture does not expose one.
+                capture_offset = getattr(
+                    state.audio_capture, "last_chunk_offset", None
                 )
+                if isinstance(capture_offset, (int, float)):
+                    chunk_start_offset = float(capture_offset)
+                else:
+                    chunk_start_offset = chunk_index * chunk_duration
+                chunk_index += 1
+                # Derived domain prior (5b) — adapts as the call progresses.
+                initial_prompt = None
+                if state.vocabulary is not None:
+                    initial_prompt = state.vocabulary.initial_prompt()
                 lines = await state.recogniser.transcribe_chunk(
-                    audio_chunk, chunk_start_offset=chunk_start_offset
+                    audio_chunk,
+                    chunk_start_offset=chunk_start_offset,
+                    initial_prompt=initial_prompt,
                 )
                 if lines:
                     last_speech_time = time.monotonic()

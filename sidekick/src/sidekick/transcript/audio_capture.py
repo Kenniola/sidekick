@@ -39,15 +39,32 @@ class AudioCapture:
         device_index: int | None = None,
         chunk_duration: float = 5.0,
         silence_threshold: float = 0.002,
+        max_queue_chunks: int = 32,
     ):
         self.device_index = device_index
         self.chunk_duration = chunk_duration
         self.silence_threshold = silence_threshold
         self.is_capturing = False
 
-        self._queue: asyncio.Queue[np.ndarray | None] = asyncio.Queue()
+        # Bounded queue with a drop-to-latest policy (5a). Under sustained CPU
+        # overload transcription falls behind real time; rather than let the
+        # backlog (and memory) grow without limit, ``_enqueue_chunk`` drops the
+        # oldest queued chunk so live suggestions stay current. In normal
+        # operation the queue sits near-empty and nothing is dropped.
+        self._queue: asyncio.Queue[tuple[float, np.ndarray] | None] = asyncio.Queue(
+            maxsize=max(1, max_queue_chunks)
+        )
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+
+        # Audio-position bookkeeping (5a). ``last_chunk_offset`` is the
+        # start offset (seconds from capture start) of the most recently
+        # yielded chunk, derived from audio actually captured so it is immune
+        # to processing backlog (fixes the wall-clock timestamp drift).
+        # ``dropped_chunks`` counts chunks discarded by the drop-to-latest
+        # policy, for diagnostics.
+        self.last_chunk_offset: float = 0.0
+        self.dropped_chunks: int = 0
 
         # Resolved at start time
         self._source_rate: int = 0
@@ -85,14 +102,8 @@ class AudioCapture:
             )
             self._thread.start()
 
-            # Yield chunks from the async queue
-            while self.is_capturing:
-                try:
-                    chunk = await asyncio.wait_for(self._queue.get(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    continue
-                if chunk is None:
-                    break
+            # Drain queued chunks (offset-tagged) and yield the audio.
+            async for chunk in self._drain_queue():
                 yield chunk
 
         finally:
@@ -103,14 +114,64 @@ class AudioCapture:
                 self._thread.join(timeout=3.0)
             pa.terminate()
 
+    async def _drain_queue(self) -> AsyncIterator[np.ndarray]:
+        """Yield audio chunks from the queue, tracking each chunk's offset.
+
+        Queue items are ``(start_offset_seconds, chunk)`` tuples produced by the
+        capture thread, or ``None`` (the stop sentinel). The start offset is
+        recorded on ``last_chunk_offset`` immediately before the chunk is
+        yielded so the consumer can read the audio position of the chunk it
+        just received. Separated from :meth:`start` (which owns the hardware)
+        so the draining/offset logic is testable without audio hardware.
+        """
+        while self.is_capturing:
+            try:
+                item = await asyncio.wait_for(self._queue.get(), timeout=2.0)
+            except asyncio.TimeoutError:
+                continue
+            if item is None:
+                break
+            offset, chunk = item
+            self.last_chunk_offset = offset
+            yield chunk
+
+    def _enqueue_chunk(self, item: tuple[float, np.ndarray]) -> None:
+        """Enqueue a captured chunk, dropping the oldest if the queue is full.
+
+        Runs on the event loop thread (scheduled via ``call_soon_threadsafe``).
+        Drop-to-latest keeps the live transcript current under sustained
+        overload instead of letting latency and memory grow unbounded.
+        """
+        try:
+            self._queue.put_nowait(item)
+        except asyncio.QueueFull:
+            try:
+                self._queue.get_nowait()  # discard the oldest queued chunk
+                self.dropped_chunks += 1
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self._queue.put_nowait(item)
+            except asyncio.QueueFull:
+                pass
+
     def stop(self):
         """Signal the capture to stop."""
         self.is_capturing = False
-        # Push sentinel to unblock the async generator
+        # Push sentinel to unblock the async generator. If the queue is full,
+        # make room so the sentinel is never lost.
         try:
             self._queue.put_nowait(None)
         except asyncio.QueueFull:
-            pass
+            try:
+                self._queue.get_nowait()
+                self.dropped_chunks += 1
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self._queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
         logger.info("Audio capture stopped.")
 
     def list_devices(self) -> list[dict]:
@@ -182,6 +243,12 @@ class AudioCapture:
         buffer_size = 1024
         buffer: list[bytes] = []
         frames_collected = 0
+        # Cumulative seconds of audio read from the stream before the current
+        # chunk. Because the stream is read in real time this equals the true
+        # audio position of each chunk, independent of how far transcription
+        # has fallen behind. Silent chunks are counted here (so the timeline
+        # stays continuous) even though they are not emitted.
+        captured_seconds = 0.0
 
         stream = None
         try:
@@ -206,14 +273,17 @@ class AudioCapture:
 
                 if frames_collected >= frames_per_chunk:
                     chunk = self._process_buffer(buffer)
+                    chunk_start_offset = captured_seconds
+                    captured_seconds += frames_collected / self._source_rate
                     buffer.clear()
                     frames_collected = 0
 
                     if chunk is not None:
-                        # Push to async queue from the thread
+                        # Push to async queue from the thread (drop-to-latest).
                         if self._loop and self._loop.is_running():
                             self._loop.call_soon_threadsafe(
-                                self._queue.put_nowait, chunk
+                                self._enqueue_chunk,
+                                (chunk_start_offset, chunk),
                             )
 
         except Exception:
@@ -225,8 +295,23 @@ class AudioCapture:
             # Push sentinel
             if self._loop and self._loop.is_running():
                 self._loop.call_soon_threadsafe(
-                    self._queue.put_nowait, None
+                    self._enqueue_chunk_sentinel
                 )
+
+    def _enqueue_chunk_sentinel(self) -> None:
+        """Enqueue the stop sentinel from the capture thread (drop-to-latest)."""
+        try:
+            self._queue.put_nowait(None)
+        except asyncio.QueueFull:
+            try:
+                self._queue.get_nowait()
+                self.dropped_chunks += 1
+            except asyncio.QueueEmpty:
+                pass
+            try:
+                self._queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
     def _process_buffer(self, raw_frames: list[bytes]) -> np.ndarray | None:
         """Convert raw audio buffer to float32 16kHz mono. Returns None if silent."""
