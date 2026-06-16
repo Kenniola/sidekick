@@ -176,18 +176,41 @@ async def _initialise_capture(state: SessionState) -> bool:
 
     loop = asyncio.get_running_loop()
 
+    # 5d: optionally capture the local microphone in addition to system audio
+    # so speech can be attributed to "(me)" vs "(remote)". Default off — a
+    # single loopback capture tagged "(audio)" (unchanged behaviour).
+    capture_mic = bool(
+        getattr(getattr(state.config, "speech", None), "capture_microphone", False)
+    )
+    if capture_mic:
+        captures = [
+            AudioCapture(capture_mode="loopback", speaker_label="(remote)"),
+            AudioCapture(capture_mode="input", speaker_label="(me)"),
+        ]
+    else:
+        captures = [AudioCapture(capture_mode="loopback", speaker_label="(audio)")]
+
     # 5c pre-roll: create and BEGIN audio capture *before* loading the (slow)
     # Whisper model, so the WASAPI stream buffers the opening of the meeting
     # while the model loads instead of dropping the first ~minute. The bounded
     # capture queue holds the pre-roll; once the model is ready _consume_audio
     # drains the buffered audio first. Best-effort — if begin() fails (e.g. no
     # device), start() opens capture lazily later as before.
-    state.audio_capture = AudioCapture()
-    try:
-        state.audio_capture.begin()
-        logger.info("Audio capture pre-roll started (buffering during model load).")
-    except Exception as e:  # noqa: BLE001 — fall back to lazy start in _consume_audio
-        logger.debug("Pre-roll capture begin failed (%s); will start lazily.", e)
+    state.audio_captures = captures
+    state.audio_capture = captures[0]  # primary handle (status/stop reference)
+    for cap in captures:
+        try:
+            cap.begin()
+            logger.info(
+                "Audio capture pre-roll started for %s (buffering during model load).",
+                cap.speaker_label,
+            )
+        except Exception as e:  # noqa: BLE001 — fall back to lazy start in _consume_audio
+            logger.debug(
+                "Pre-roll capture begin failed for %s (%s); will start lazily.",
+                cap.speaker_label,
+                e,
+            )
 
     try:
         state.recogniser = await loop.run_in_executor(
@@ -196,12 +219,16 @@ async def _initialise_capture(state: SessionState) -> bool:
     except Exception as e:
         state.last_error = f"Failed to load speech model: {e}"
         logger.exception(state.last_error)
-        # Stop the pre-roll capture we may have started so the device/thread
+        # Stop the pre-roll captures we may have started so the device/thread
         # do not leak when initialisation fails.
-        try:
-            state.audio_capture.stop()
-        except Exception:  # noqa: BLE001 — cleanup is best-effort
-            logger.debug("Pre-roll capture stop after model-load failure raised", exc_info=True)
+        for cap in captures:
+            try:
+                cap.stop()
+            except Exception:  # noqa: BLE001 — cleanup is best-effort
+                logger.debug(
+                    "Pre-roll capture stop after model-load failure raised",
+                    exc_info=True,
+                )
         return False
 
     # Seed the derived Whisper vocabulary prior (Phase 5b) from the same
@@ -222,6 +249,74 @@ async def _initialise_capture(state: SessionState) -> bool:
     device_names = [d["name"] for d in devices] if devices else ["(none found)"]
     logger.info("Loopback devices: %s", ", ".join(device_names))
     return True
+
+
+async def _merge_captures(captures: list):
+    """Fan-in chunks from multiple audio captures into one async stream (5d).
+
+    Each capture's ``start()`` iterator is drained by its own pump task into a
+    shared queue; this generator yields ``(speaker_label, offset, chunk)`` in
+    arrival order so dual loopback/microphone capture appears as a single
+    interleaved stream to the consumer. Pump tasks are cancelled on exit.
+    """
+    merged: asyncio.Queue = asyncio.Queue()
+    _DONE = object()
+
+    async def _pump(cap):
+        label = getattr(cap, "speaker_label", "(audio)")
+        try:
+            async for chunk in cap.start():
+                await merged.put((label, getattr(cap, "last_chunk_offset", 0.0), chunk))
+        finally:
+            await merged.put(_DONE)
+
+    tasks = [asyncio.create_task(_pump(c)) for c in captures]
+    remaining = len(tasks)
+    try:
+        while remaining > 0:
+            item = await merged.get()
+            if item is _DONE:
+                remaining -= 1
+                continue
+            yield item
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _iter_capture_chunks(state: SessionState):
+    """Yield ``(speaker, offset, chunk)`` from the session's audio capture(s).
+
+    The default loopback-only path wraps a single capture, preserving the
+    existing offset/timing semantics. When microphone capture is enabled (5d)
+    it fans in the loopback ``(remote)`` and microphone ``(me)`` streams so each
+    transcript line carries the correct speaker tag.
+    """
+    captures = [
+        c
+        for c in (getattr(state, "audio_captures", None) or [state.audio_capture])
+        if c is not None
+    ]
+    if len(captures) == 1:
+        cap = captures[0]
+        label = getattr(cap, "speaker_label", "(audio)")
+        # Sample-based audio position (5a): prefer the capture's per-chunk
+        # offset (immune to processing backlog); fall back to an index estimate
+        # when the capture does not expose one (e.g. test doubles).
+        chunk_duration = getattr(cap, "chunk_duration", 5.0)
+        index = 0
+        async for chunk in cap.start():
+            capture_offset = getattr(cap, "last_chunk_offset", None)
+            if isinstance(capture_offset, (int, float)):
+                offset = float(capture_offset)
+            else:
+                offset = index * chunk_duration
+            index += 1
+            yield label, offset, chunk
+        return
+    async for item in _merge_captures(captures):
+        yield item
 
 
 async def _consume_audio(state: SessionState, notify: Callable[[object], None]) -> None:
@@ -256,20 +351,17 @@ async def _consume_audio(state: SessionState, notify: Callable[[object], None]) 
     # derived from audio actually captured, so transcript timestamps reflect
     # the position within the meeting even when transcription falls behind
     # real time (fixes the wall-clock drift that inflated a 32-min meeting to
-    # "56 minutes"). A local index estimate is used only when the capture does
-    # not expose an offset (e.g. test doubles).
-    chunk_duration = getattr(state.audio_capture, "chunk_duration", 5.0)
-    chunk_index = 0
-
+    # "56 minutes"). The unified capture stream (5d) supplies the per-chunk
+    # offset and speaker tag for both single (loopback) and dual (mic) capture.
     audio_iter = None
     try:
-        audio_iter = state.audio_capture.start().__aiter__()
+        audio_iter = _iter_capture_chunks(state).__aiter__()
         while True:
             # Wait for next audio chunk.  Use a short poll interval so we
             # can check the speech-based timer even when audio keeps flowing
             # (e.g. background noise with no intelligible speech).
             try:
-                audio_chunk = await asyncio.wait_for(
+                speaker, chunk_start_offset, audio_chunk = await asyncio.wait_for(
                     audio_iter.__anext__(), timeout=AUDIO_POLL_SECS
                 )
             except asyncio.TimeoutError:
@@ -294,17 +386,6 @@ async def _consume_audio(state: SessionState, notify: Callable[[object], None]) 
                 break
 
             try:
-                # Sample-based audio position (5a): prefer the capture's
-                # per-chunk offset (immune to processing backlog); fall back to
-                # an index estimate when the capture does not expose one.
-                capture_offset = getattr(
-                    state.audio_capture, "last_chunk_offset", None
-                )
-                if isinstance(capture_offset, (int, float)):
-                    chunk_start_offset = float(capture_offset)
-                else:
-                    chunk_start_offset = chunk_index * chunk_duration
-                chunk_index += 1
                 # Derived domain prior (5b) — adapts as the call progresses.
                 initial_prompt = None
                 if state.vocabulary is not None:
@@ -313,6 +394,7 @@ async def _consume_audio(state: SessionState, notify: Callable[[object], None]) 
                     audio_chunk,
                     chunk_start_offset=chunk_start_offset,
                     initial_prompt=initial_prompt,
+                    speaker=speaker,
                 )
                 if lines:
                     last_speech_time = time.monotonic()
@@ -374,8 +456,13 @@ async def _consume_audio(state: SessionState, notify: Callable[[object], None]) 
         # Without this, the WASAPI capture thread and Whisper model leak.
         if audio_iter is not None:
             await audio_iter.aclose()
+        # Stop every capture (loopback + optional microphone, 5d).
+        for cap in (
+            getattr(state, "audio_captures", None) or [state.audio_capture]
+        ):
+            if cap is not None:
+                cap.stop()
         if state.audio_capture is not None:
-            state.audio_capture.stop()
             logger.info("Audio capture cleaned up after listen loop exit.")
         if state.recogniser is not None:
             state.recogniser.close()

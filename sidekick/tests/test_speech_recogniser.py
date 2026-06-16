@@ -215,7 +215,19 @@ class TestTranscribeChunk:
         ]
         assert all(ln.speaker == "(audio)" for ln in lines)
 
-    def test_chunk_offset_added_to_all_segments(self, monkeypatch):
+    def test_speaker_tag_applied_to_all_lines(self, monkeypatch):
+        """5d: the speaker arg overrides the default "(audio)" tag."""
+        _install_fake_whisper(
+            monkeypatch,
+            [_Seg(0.0, 1.0, "Over here."), _Seg(1.0, 2.0, "And here.")],
+        )
+        rec = sr.WhisperRecogniser()
+        audio = np.zeros(16_000, dtype=np.float32)
+
+        lines = asyncio.run(rec.transcribe_chunk(audio, speaker="(me)"))
+
+        assert lines  # sanity
+        assert all(ln.speaker == "(me)" for ln in lines)
         """The v0.3.0 fix: chunk_start_offset must be added to every timestamp."""
         _install_fake_whisper(
             monkeypatch,

@@ -36,7 +36,8 @@ class SessionState:
     prototype: "PrototypePipeline | None" = None
 
     # Tier 2 — live audio capture
-    audio_capture: object | None = None        # AudioCapture instance
+    audio_capture: object | None = None        # AudioCapture instance (primary)
+    audio_captures: list | None = None         # all captures (loopback + mic, 5d)
     recogniser: object | None = None           # SpeechRecogniser instance
     listen_task: "asyncio.Task | None" = None
 

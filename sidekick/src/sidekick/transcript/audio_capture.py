@@ -40,11 +40,22 @@ class AudioCapture:
         chunk_duration: float = 5.0,
         silence_threshold: float = 0.002,
         max_queue_chunks: int = 32,
+        capture_mode: str = "loopback",
+        speaker_label: str = "(audio)",
     ):
         self.device_index = device_index
         self.chunk_duration = chunk_duration
         self.silence_threshold = silence_threshold
         self.is_capturing = False
+
+        # Capture source (5d). ``loopback`` records system audio output (the
+        # remote participants via WASAPI loopback); ``input`` records a
+        # physical input device (the local microphone). ``speaker_label`` tags
+        # every transcript line this capture produces so the analyst can tell
+        # who spoke. Loopback-only sessions keep the historical ``(audio)``
+        # tag; dual capture uses ``(remote)`` and ``(me)``.
+        self.capture_mode = capture_mode
+        self.speaker_label = speaker_label
 
         # Bounded queue with a drop-to-latest policy (5a). Under sustained CPU
         # overload transcription falls behind real time; rather than let the
@@ -223,16 +234,26 @@ class AudioCapture:
     # ------------------------------------------------------------------
 
     def _resolve_device(self, pa) -> dict:
-        """Find the loopback device to capture from."""
+        """Find the device to capture from (loopback output or input mic)."""
         import pyaudiowpatch as pyaudio
 
         if self.device_index is not None:
             dev = pa.get_device_info_by_index(self.device_index)
+            if self.capture_mode == "input":
+                if dev["maxInputChannels"] < 1 or dev.get("isLoopbackDevice"):
+                    raise RuntimeError(
+                        f"Device {self.device_index} ({dev['name']}) is not a "
+                        "microphone input device."
+                    )
+                return dev
             if not dev.get("isLoopbackDevice"):
                 raise RuntimeError(
                     f"Device {self.device_index} ({dev['name']}) is not a loopback device."
                 )
             return dev
+
+        if self.capture_mode == "input":
+            return self._resolve_input_device(pa)
 
         # Auto-detect: find loopback for the default WASAPI output
         wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
@@ -258,6 +279,28 @@ class AudioCapture:
         raise RuntimeError(
             f"No WASAPI loopback devices found. Available devices: {available}"
         )
+
+    def _resolve_input_device(self, pa) -> dict:
+        """Find the default WASAPI microphone input device (5d)."""
+        import pyaudiowpatch as pyaudio
+
+        wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        default_in_index = wasapi.get("defaultInputDevice", -1)
+        if default_in_index is not None and default_in_index >= 0:
+            dev = pa.get_device_info_by_index(default_in_index)
+            if dev["maxInputChannels"] >= 1 and not dev.get("isLoopbackDevice"):
+                return dev
+
+        # Fallback: first non-loopback input device.
+        for i in range(pa.get_device_count()):
+            dev = pa.get_device_info_by_index(i)
+            if dev["maxInputChannels"] >= 1 and not dev.get("isLoopbackDevice"):
+                logger.warning(
+                    "No default WASAPI input; falling back to: %s", dev["name"]
+                )
+                return dev
+
+        raise RuntimeError("No microphone input device found for (me) capture.")
 
     def _capture_thread(self, pa, device: dict):
         """Run in a background thread — reads audio and pushes chunks to the async queue."""

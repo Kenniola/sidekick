@@ -107,6 +107,7 @@ class SpeechRecogniser(Protocol):
         sample_rate: int = 16_000,
         chunk_start_offset: float = 0.0,
         initial_prompt: str | None = None,
+        speaker: str = "(audio)",
     ) -> list[TranscriptLine]: ...
 
     def close(self) -> None: ...
@@ -184,6 +185,7 @@ class WhisperRecogniser:
         sample_rate: int = 16_000,
         chunk_start_offset: float = 0.0,
         initial_prompt: str | None = None,
+        speaker: str = "(audio)",
     ) -> list[TranscriptLine]:
         """Transcribe a single audio chunk.
 
@@ -198,6 +200,10 @@ class WhisperRecogniser:
             initial_prompt: optional domain-vocabulary hint (Phase 5b) biasing
                 Whisper toward expected proper nouns/jargon. ``None`` preserves
                 Whisper's default behaviour.
+            speaker: speaker tag applied to every emitted line (Phase 5d).
+                Defaults to ``"(audio)"`` (loopback-only). When microphone
+                capture is enabled the caller passes ``"(remote)"`` for system
+                audio and ``"(me)"`` for the local microphone.
 
         Returns:
             List of ``TranscriptLine`` with session-relative VTT timestamps.
@@ -212,7 +218,7 @@ class WhisperRecogniser:
             logger.debug("Unusual sample_rate=%s for Whisper input", sample_rate)
 
         return await asyncio.to_thread(
-            self._transcribe_sync, audio, chunk_start_offset, initial_prompt
+            self._transcribe_sync, audio, chunk_start_offset, initial_prompt, speaker
         )
 
     def _transcribe_sync(
@@ -220,6 +226,7 @@ class WhisperRecogniser:
         audio: np.ndarray,
         chunk_start_offset: float,
         initial_prompt: str | None,
+        speaker: str = "(audio)",
     ) -> list[TranscriptLine]:
         """Synchronous Whisper inference + segment filtering.
 
@@ -264,7 +271,7 @@ class WhisperRecogniser:
                 TranscriptLine(
                     start=_format_ts(chunk_start_offset + seg.start),
                     end=_format_ts(chunk_start_offset + seg.end),
-                    speaker="(audio)",
+                    speaker=speaker,
                     text=text,
                 )
             )

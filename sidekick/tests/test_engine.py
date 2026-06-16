@@ -144,6 +144,8 @@ class TestInitialiseCapturePreroll:
     class _FakeCapture:
         def __init__(self, calls, *a, **k):
             self._calls = calls
+            self.speaker_label = k.get("speaker_label", "(audio)")
+            self.capture_mode = k.get("capture_mode", "loopback")
 
         def begin(self):
             self._calls.append("begin")
@@ -157,11 +159,12 @@ class TestInitialiseCapturePreroll:
     @pytest.mark.asyncio
     async def test_capture_begins_before_model_load(self, monkeypatch):
         s = _make_state()
+        s.config.speech.capture_microphone = False
         calls: list[str] = []
 
         monkeypatch.setattr(
             "sidekick.transcript.audio_capture.AudioCapture",
-            lambda *a, **k: self._FakeCapture(calls),
+            lambda *a, **k: self._FakeCapture(calls, *a, **k),
         )
 
         def _fake_create_recogniser(_speech):
@@ -182,11 +185,12 @@ class TestInitialiseCapturePreroll:
     @pytest.mark.asyncio
     async def test_model_load_failure_stops_preroll_capture(self, monkeypatch):
         s = _make_state()
+        s.config.speech.capture_microphone = False
         calls: list[str] = []
 
         monkeypatch.setattr(
             "sidekick.transcript.audio_capture.AudioCapture",
-            lambda *a, **k: self._FakeCapture(calls),
+            lambda *a, **k: self._FakeCapture(calls, *a, **k),
         )
 
         def _boom(_speech):

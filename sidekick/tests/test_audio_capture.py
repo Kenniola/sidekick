@@ -202,5 +202,22 @@ class TestBeginPreroll:
         assert len(chunks) == 1
 
 
+# ---------------------------------------------------------------------------
+# Speaker attribution / capture mode (5d)
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakerAttribution:
+    def test_defaults_to_loopback_audio_tag(self):
+        cap = AudioCapture()
+        assert cap.capture_mode == "loopback"
+        assert cap.speaker_label == "(audio)"
+
+    def test_microphone_mode_and_label_stored(self):
+        cap = AudioCapture(capture_mode="input", speaker_label="(me)")
+        assert cap.capture_mode == "input"
+        assert cap.speaker_label == "(me)"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

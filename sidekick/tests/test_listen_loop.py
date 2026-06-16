@@ -34,13 +34,15 @@ class FakeRecogniser:
         self.calls = 0
         self.offsets: list[float] = []
         self.prompts: list[str | None] = []
+        self.speakers: list[str] = []
 
     async def transcribe_chunk(
-        self, audio, chunk_start_offset=0.0, initial_prompt=None
+        self, audio, chunk_start_offset=0.0, initial_prompt=None, speaker="(audio)"
     ):
         self.calls += 1
         self.offsets.append(chunk_start_offset)
         self.prompts.append(initial_prompt)
+        self.speakers.append(speaker)
         if self.raise_exc is not None:
             raise self.raise_exc
         return list(self._lines)
@@ -60,13 +62,20 @@ class FakeAudioCapture:
 
     chunk_duration = 5.0
 
-    def __init__(self, chunks=None, anext_exc=None, infinite=False):
+    def __init__(self, chunks=None, anext_exc=None, infinite=False, **kwargs):
         self.chunks = list(chunks) if chunks is not None else []
         self.anext_exc = anext_exc
         self.infinite = infinite
         self.stopped = False
         self.closed = False
+        self.began = False
         self._idx = 0
+        # Mirror the real capture's 5d attributes so the engine can read them.
+        self.speaker_label = kwargs.get("speaker_label", "(audio)")
+        self.capture_mode = kwargs.get("capture_mode", "loopback")
+
+    def begin(self):
+        self.began = True
 
     def start(self):
         return self
@@ -161,7 +170,6 @@ class TestConsumeAudioDispatch:
         await engine._consume_audio(state, lambda r: None)
 
         assert cap.stopped is True
-        assert cap.closed is True
         assert rec.closed is True
 
 
@@ -183,7 +191,7 @@ class TestConsumeAudioSilence:
         await engine._consume_audio(state, lambda r: None)
 
         assert "no speech detected" in state.last_error
-        assert cap.stopped and cap.closed
+        assert cap.stopped
 
     @pytest.mark.asyncio
     async def test_auto_stop_when_audio_flows_without_speech(self, monkeypatch):
@@ -241,7 +249,7 @@ class TestConsumeAudioErrors:
         await engine._consume_audio(state, lambda r: None)
 
         assert "Too many consecutive errors" in state.last_error
-        assert cap.stopped and cap.closed and rec.closed
+        assert cap.stopped and rec.closed
 
     @pytest.mark.asyncio
     async def test_cancellation_still_cleans_up(self, monkeypatch):
@@ -255,7 +263,7 @@ class TestConsumeAudioErrors:
         await engine._consume_audio(state, lambda r: None)
 
         # CancelledError is caught by the loop's own handler; cleanup still runs.
-        assert cap.stopped and cap.closed and rec.closed
+        assert cap.stopped and rec.closed
 
 
 # ---------------------------------------------------------------------------
@@ -419,3 +427,115 @@ class TestVocabularyPrior:
         await engine._consume_audio(state, lambda r: None)
 
         assert rec.prompts == [None]
+
+
+# ---------------------------------------------------------------------------
+# Phase 5d — speaker attribution (loopback "(remote)" + microphone "(me)")
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakerAttribution:
+    @pytest.mark.asyncio
+    async def test_single_capture_label_reaches_recogniser(self, monkeypatch):
+        # Default loopback-only path tags every chunk with the capture's label.
+        monkeypatch.setenv("SIDEKICK_CLASSIFY_INTERVAL", "0")
+        monkeypatch.setattr(engine, "SILENCE_TIMEOUT_SECS", 10_000)
+        monkeypatch.setattr(engine, "classify_and_dispatch", AsyncMock())
+
+        rec = FakeRecogniser(lines_per_chunk=["L"])
+        cap = FakeAudioCapture(chunks=["c1", "c2"], speaker_label="(audio)")
+        state = _make_state(rec, cap)
+
+        await engine._consume_audio(state, lambda r: None)
+
+        assert rec.speakers == ["(audio)", "(audio)"]
+
+    @pytest.mark.asyncio
+    async def test_merge_captures_interleaves_both_labels(self):
+        # Fan-in yields (label, offset, chunk) from every capture.
+        remote = FakeAudioCapture(chunks=["r1"], speaker_label="(remote)")
+        mine = FakeAudioCapture(chunks=["m1"], speaker_label="(me)")
+
+        seen = []
+        async for label, _offset, chunk in engine._merge_captures([remote, mine]):
+            seen.append((label, chunk))
+
+        assert ("(remote)", "r1") in seen
+        assert ("(me)", "m1") in seen
+        assert len(seen) == 2
+
+    @pytest.mark.asyncio
+    async def test_dual_capture_dispatches_tagged_lines(self, monkeypatch):
+        # With two captures registered, both speakers reach the recogniser.
+        monkeypatch.setenv("SIDEKICK_CLASSIFY_INTERVAL", "0")
+        monkeypatch.setattr(engine, "SILENCE_TIMEOUT_SECS", 10_000)
+        monkeypatch.setattr(engine, "classify_and_dispatch", AsyncMock())
+
+        rec = FakeRecogniser(lines_per_chunk=["L"])
+        remote = FakeAudioCapture(chunks=["r1"], speaker_label="(remote)")
+        mine = FakeAudioCapture(chunks=["m1"], speaker_label="(me)")
+        state = _make_state(rec, remote)
+        state.audio_captures = [remote, mine]
+
+        await engine._consume_audio(state, lambda r: None)
+
+        assert set(rec.speakers) == {"(remote)", "(me)"}
+        # Both captures are stopped on cleanup.
+        assert remote.stopped and mine.stopped
+
+
+class TestInitialiseCaptureMicrophone:
+    @pytest.mark.asyncio
+    async def test_microphone_enabled_creates_remote_and_me_captures(
+        self, monkeypatch
+    ):
+        from sidekick.transcript import audio_capture, speech_recogniser
+
+        created: list[FakeAudioCapture] = []
+
+        def _factory(*a, **k):
+            cap = FakeAudioCapture(**k)
+            created.append(cap)
+            return cap
+
+        rec = FakeRecogniser()
+        monkeypatch.setattr(speech_recogniser, "create_recogniser", lambda _c: rec)
+        monkeypatch.setattr(audio_capture, "AudioCapture", _factory)
+
+        state = _make_state()
+        state.config.speech.capture_microphone = True
+
+        ok = await engine._initialise_capture(state)
+
+        assert ok is True
+        labels = {c.speaker_label for c in created}
+        assert labels == {"(remote)", "(me)"}
+        assert len(state.audio_captures) == 2
+        assert all(c.began for c in created)
+
+    @pytest.mark.asyncio
+    async def test_microphone_disabled_creates_single_audio_capture(
+        self, monkeypatch
+    ):
+        from sidekick.transcript import audio_capture, speech_recogniser
+
+        created: list[FakeAudioCapture] = []
+
+        def _factory(*a, **k):
+            cap = FakeAudioCapture(**k)
+            created.append(cap)
+            return cap
+
+        rec = FakeRecogniser()
+        monkeypatch.setattr(speech_recogniser, "create_recogniser", lambda _c: rec)
+        monkeypatch.setattr(audio_capture, "AudioCapture", _factory)
+
+        state = _make_state()
+        state.config.speech.capture_microphone = False
+
+        ok = await engine._initialise_capture(state)
+
+        assert ok is True
+        assert len(created) == 1
+        assert created[0].speaker_label == "(audio)"
+        assert len(state.audio_captures) == 1

@@ -53,6 +53,17 @@ class TestParseConfig:
     def test_legacy_azure_backend_normalised_to_whisper(self):
         assert _parse_config({"speech": {"backend": "azure"}}).speech.backend == "whisper"
 
+    def test_capture_microphone_defaults_false(self):
+        assert _parse_config({}).speech.capture_microphone is False
+
+    def test_capture_microphone_enabled_from_yaml(self):
+        c = _parse_config({"speech": {"capture_microphone": True}})
+        assert c.speech.capture_microphone is True
+
+    def test_capture_microphone_truthy_string_coerced(self):
+        c = _parse_config({"speech": {"capture_microphone": "yes"}})
+        assert c.speech.capture_microphone is True
+
     def test_models_section_parsed(self):
         c = _parse_config({"models": {"fast": ["copilot:x"]}})
         assert c.models.fast == ["copilot:x"]

@@ -146,6 +146,11 @@ class SpeechConfig:
     model: str = "small.en"          # base.en | small.en | medium.en | large-v3
     compute_type: str = "int8"       # int8 | int8_float16 | float16 | float32
     device: str = "auto"             # auto | cpu | cuda (CTranslate2 — no NPU)
+    # Dual-source speaker attribution (5d). When False (default) sidekick
+    # captures system audio only, tagged "(audio)" — unchanged behaviour. When
+    # True it additionally captures the local microphone, tagging remote audio
+    # "(remote)" and the local mic "(me)" so the analyst can attribute speech.
+    capture_microphone: bool = False
 
 
 # Canonical default model fallback chains, shared with llm._TIER_CONFIG.
@@ -169,6 +174,13 @@ _DEFAULT_MODEL_CHAINS: dict[str, list[str]] = {
         "github_models:DeepSeek-R1",
     ],
 }
+
+
+def _as_bool(value: object) -> bool:
+    """Coerce a YAML/env value to bool (accepts true/1/yes/on, case-insensitive)."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def _parse_model_chain(entries: list[str]) -> list[tuple[str, str]]:
@@ -475,6 +487,12 @@ def _parse_config(raw: dict) -> SidekickConfig:
                 or os.environ.get("SIDEKICK_WHISPER_MODEL", "small.en"),
             compute_type=speech_raw.get("compute_type", "int8")
                 or os.environ.get("SIDEKICK_WHISPER_COMPUTE", "int8"),
+            capture_microphone=_as_bool(
+                os.environ.get(
+                    "SIDEKICK_CAPTURE_MIC",
+                    speech_raw.get("capture_microphone", False),
+                )
+            ),
         ),
         models=ModelsConfig(
             fast=models_raw.get("fast") or list(_DEFAULT_MODEL_CHAINS["fast"]),
