@@ -372,20 +372,34 @@ async def suggest_questions() -> str:
     )
 
     try:
-        response_text = await call_llm(
-            system_prompt=(
-                "You are a senior consulting advisor with deep expertise in "
-                f"{', '.join(_state.config.domains)}. "
-                "Think carefully through the reasoning chain before generating "
-                "questions. Return JSON only."
+        # ``timeout`` on call_llm is the *per-HTTP-attempt* budget. The deep
+        # chain has several models, each retried with exponential backoff, so a
+        # throttled (429/5xx) upstream could otherwise stall this tool for
+        # minutes. Cap the whole call with an overall wall-clock budget so it
+        # always returns promptly, and degrade gracefully on timeout.
+        response_text = await asyncio.wait_for(
+            call_llm(
+                system_prompt=(
+                    "You are a senior consulting advisor with deep expertise in "
+                    f"{', '.join(_state.config.domains)}. "
+                    "Think carefully through the reasoning chain before generating "
+                    "questions. Return JSON only."
+                ),
+                user_prompt=prompt,
+                json_output=True,
+                timeout=30.0,
+                tier="deep",
             ),
-            user_prompt=prompt,
-            json_output=True,
-            timeout=45.0,
-            tier="deep",
+            timeout=60.0,
         )
 
         data = parse_llm_json(response_text)
+    except asyncio.TimeoutError:
+        logger.warning("suggest_questions timed out after 60s")
+        return (
+            "Suggestions timed out (the model is busy — likely throttled while "
+            "research is also running). Try `suggest_questions` again in a moment."
+        )
     except Exception as e:
         logger.exception("suggest_questions LLM call failed")
         return f"Failed to generate suggestions: {type(e).__name__}: {e}"

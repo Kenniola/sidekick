@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, fields
 from sidekick.analyst.context import MeetingContext
 from sidekick.analyst.prompts import ANALYST_SYSTEM_PROMPT
 from sidekick.config import SidekickConfig
+from sidekick.dedup import similarity
 from sidekick.llm import call_llm, parse_llm_json
 
 logger = logging.getLogger(__name__)
@@ -101,24 +102,38 @@ class TranscriptAnalyst:
         # Update threads from LLM response
         for thread_data in response.threads_update:
             tid = thread_data.get("thread_id", "")
-            if tid:
-                if tid in self.context.threads:
-                    t = self.context.threads[tid]
-                    t.status = thread_data.get("status", t.status)
-                    t.last_active_at = thread_data.get("last_active_at", t.last_active_at)
-                    t.questions.extend(thread_data.get("questions", []))
-                    t.key_facts.extend(thread_data.get("key_facts", []))
-                else:
-                    from sidekick.analyst.context import TopicThread
-                    self.context.threads[tid] = TopicThread(
-                        thread_id=tid,
-                        topic=thread_data.get("topic", tid),
-                        started_at=thread_data.get("started_at", ""),
-                        last_active_at=thread_data.get("last_active_at", ""),
-                        status=thread_data.get("status", "open"),
-                        questions=thread_data.get("questions", []),
-                        key_facts=thread_data.get("key_facts", []),
-                    )
+            if not tid:
+                continue
+
+            # The LLM frequently mints a fresh thread_id for a topic it has
+            # already opened in an earlier chunk, which previously created a
+            # duplicate thread on every mention. Resolve an unknown id to an
+            # existing thread with a near-duplicate topic before deciding to
+            # create a new one.
+            if tid not in self.context.threads:
+                match = self._find_thread_by_topic(
+                    thread_data.get("topic", tid)
+                )
+                if match is not None:
+                    tid = match
+
+            if tid in self.context.threads:
+                t = self.context.threads[tid]
+                t.status = thread_data.get("status", t.status)
+                t.last_active_at = thread_data.get("last_active_at", t.last_active_at)
+                t.questions.extend(thread_data.get("questions", []))
+                t.key_facts.extend(thread_data.get("key_facts", []))
+            else:
+                from sidekick.analyst.context import TopicThread
+                self.context.threads[tid] = TopicThread(
+                    thread_id=tid,
+                    topic=thread_data.get("topic", tid),
+                    started_at=thread_data.get("started_at", ""),
+                    last_active_at=thread_data.get("last_active_at", ""),
+                    status=thread_data.get("status", "open"),
+                    questions=thread_data.get("questions", []),
+                    key_facts=thread_data.get("key_facts", []),
+                )
 
         # Filter items based on threshold
         items = []
@@ -137,6 +152,29 @@ class TranscriptAnalyst:
         )
 
         return items
+
+    # Topics this close are treated as the same thread. Topics are short
+    # descriptive phrases, so a high threshold avoids merging genuinely
+    # distinct themes while still catching verbatim/near-verbatim repeats.
+    _TOPIC_DEDUP_THRESHOLD = 0.8
+
+    def _find_thread_by_topic(self, topic: str) -> str | None:
+        """Return the id of an existing thread whose topic matches ``topic``.
+
+        Guards against the analyst LLM minting a fresh ``thread_id`` for a
+        topic it already opened, which would otherwise create duplicate
+        threads. Returns the best match at/above the dedup threshold, else None.
+        """
+        if not topic:
+            return None
+        best_tid: str | None = None
+        best_score = 0.0
+        for existing_tid, thread in self.context.threads.items():
+            score = similarity(topic, thread.topic)
+            if score > best_score:
+                best_score = score
+                best_tid = existing_tid
+        return best_tid if best_score >= self._TOPIC_DEDUP_THRESHOLD else None
 
     def _build_prompt(self, chunk: list) -> str:
         chunk_text = "\n".join(
