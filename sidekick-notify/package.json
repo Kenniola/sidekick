@@ -2,8 +2,8 @@
   "name": "sidekick-notify",
   "displayName": "Sidekick Notify",
   "description": "Toast notifications for Sidekick meeting findings",
-  "version": "0.1.0",
-  "publisher": "sidekick-copilot",
+  "version": "0.3.0",
+  "publisher": "koladimeji",
   "engines": {
     "vscode": "^1.85.0"
   },

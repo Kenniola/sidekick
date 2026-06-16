@@ -112,6 +112,9 @@ function poll(): void {
 interface Alert {
   type: string;
   summary: string;
+  answer?: string;
+  source?: string;
+  file?: string;
   confidence: string;
   priority: string;
   timestamp: string;
@@ -122,9 +125,12 @@ function showAlert(alert: Alert): void {
     research: "🔍",
     prototype: "🛠️",
     roadmap: "🗺️",
+    deliverables: "📦",
   };
   const emoji = icon[alert.type] ?? "📋";
-  const msg = `${emoji} Sidekick: ${alert.summary}`;
+  // Prefer the one-line answer (the "answer card"); fall back to the summary.
+  const headline = (alert.answer && alert.answer.trim()) || alert.summary;
+  const msg = `${emoji} Sidekick: ${headline}`;
 
   // High-priority findings get a warning toast (orange); others get info (blue)
   const isHigh = alert.priority === "high" || alert.confidence === "high";
@@ -132,7 +138,31 @@ function showAlert(alert: Alert): void {
     ? vscode.window.showWarningMessage
     : vscode.window.showInformationMessage;
 
-  show(msg, "View in Chat").then((choice) => {
+  // Offer "Open Source" when a URL is present, "Open File" for a saved
+  // deliverables/artifact path (e.g. the post-call deliverables pack).
+  const hasSource = !!(alert.source && /^https?:\/\//.test(alert.source));
+  const hasFile = !!(alert.file && alert.file.trim());
+  const actions: string[] = [];
+  if (hasSource) {
+    actions.push("Open Source");
+  }
+  if (hasFile) {
+    actions.push("Open File");
+  }
+  actions.push("View in Chat");
+
+  show(msg, ...actions).then((choice) => {
+    if (choice === "Open Source" && alert.source) {
+      vscode.env.openExternal(vscode.Uri.parse(alert.source));
+      return;
+    }
+    if (choice === "Open File" && alert.file) {
+      vscode.commands.executeCommand(
+        "vscode.open",
+        vscode.Uri.file(alert.file)
+      );
+      return;
+    }
     if (choice === "View in Chat") {
       unseenCount = 0;
       setIdle();
