@@ -27,6 +27,7 @@ and otherwise falls back to CPU (compute ``int8``). VAD gating is always on via
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Protocol
@@ -200,10 +201,32 @@ class WhisperRecogniser:
 
         Returns:
             List of ``TranscriptLine`` with session-relative VTT timestamps.
+
+        The CPU-bound Whisper inference runs in a worker thread via
+        :func:`asyncio.to_thread` so it never blocks the asyncio event loop.
+        Blocking the loop here would starve concurrent research tasks (whose
+        ``wait_for`` timeouts are wall-clock and would expire) and make the
+        ``status`` tool unresponsive while a chunk is transcribing.
         """
         if sample_rate != 16_000:
             logger.debug("Unusual sample_rate=%s for Whisper input", sample_rate)
 
+        return await asyncio.to_thread(
+            self._transcribe_sync, audio, chunk_start_offset, initial_prompt
+        )
+
+    def _transcribe_sync(
+        self,
+        audio: np.ndarray,
+        chunk_start_offset: float,
+        initial_prompt: str | None,
+    ) -> list[TranscriptLine]:
+        """Synchronous Whisper inference + segment filtering.
+
+        Runs in a worker thread (see :meth:`transcribe_chunk`). Transcriptions
+        are issued serially by the consume loop, so the repetition-filter state
+        (``_last_text`` / ``_repeat_count``) is never mutated concurrently.
+        """
         segments, _info = self.model.transcribe(
             audio,
             beam_size=5,

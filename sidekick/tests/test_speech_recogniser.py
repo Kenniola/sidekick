@@ -274,6 +274,48 @@ class TestTranscribeChunk:
         )
         assert [ln.text for ln in lines] == ["Real."]
 
+    def test_does_not_block_event_loop(self, monkeypatch):
+        """Regression: CPU-bound Whisper inference must run off the event loop.
+
+        Running ``model.transcribe`` synchronously on the loop starved
+        concurrent research tasks (their wall-clock ``wait_for`` timeouts kept
+        ticking and expired) and made the ``status`` tool unresponsive. The
+        inference now runs via ``asyncio.to_thread``; this test asserts a
+        concurrent coroutine keeps making progress while a (blocking) transcribe
+        is in flight.
+        """
+        import time
+
+        fake = _install_fake_whisper(monkeypatch, [_Seg(0.0, 1.0, "Hello.")])
+
+        # Make the fake model's transcribe genuinely block its thread.
+        def _blocking_transcribe(audio, **kwargs):
+            time.sleep(0.3)
+            return iter([_Seg(0.0, 1.0, "Hello.")]), object()
+
+        fake.transcribe = _blocking_transcribe
+        rec = sr.WhisperRecogniser()
+        audio = np.zeros(16_000, dtype=np.float32)
+
+        async def _run() -> int:
+            ticks = 0
+
+            async def _ticker() -> None:
+                nonlocal ticks
+                while True:
+                    await asyncio.sleep(0.01)
+                    ticks += 1
+
+            ticker = asyncio.create_task(_ticker())
+            await rec.transcribe_chunk(audio)
+            ticker.cancel()
+            return ticks
+
+        # If transcription blocked the loop, the ticker could not advance and
+        # ``ticks`` would be ~0. Off-loaded, it advances many times during 0.3s.
+        ticks = asyncio.run(_run())
+        assert ticks >= 5
+
 
 # ---------------------------------------------------------------------------
 # Protocol contract

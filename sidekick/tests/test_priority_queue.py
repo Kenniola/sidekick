@@ -104,6 +104,56 @@ class TestRouting:
 
 
 # ---------------------------------------------------------------------------
+# Synthesis tier selection (must match the lane budget)
+# ---------------------------------------------------------------------------
+
+
+class _TierCapturingResearch:
+    """Fake research pipeline that records the ``tier`` it was called with."""
+
+    def __init__(self, result=None):
+        self.result = result or _FakeResult()
+        self.tier = None
+
+    async def execute_direct(self, **kwargs):
+        self.tier = kwargs.get("tier")
+        return self.result
+
+
+class TestTierSelection:
+    """Regression: research items must use a tier that fits their lane timeout.
+
+    Hardcoding ``tier="deep"`` (claude-opus, the slowest model) for every item
+    caused 15s fast-lane and 30s standard-lane research to exceed the wall-clock
+    timeout and expire with zero outputs. The tier must mirror ``_route``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_simple_uses_fast_tier(self):
+        q = _make_queue()
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="simple"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.tier == "fast"
+
+    @pytest.mark.asyncio
+    async def test_medium_uses_standard_tier(self):
+        q = _make_queue()
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="medium"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.tier == "standard"
+
+    @pytest.mark.asyncio
+    async def test_complex_uses_deep_tier(self):
+        q = _make_queue()
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="complex"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.tier == "deep"
+
+
+# ---------------------------------------------------------------------------
 # Merging
 # ---------------------------------------------------------------------------
 

@@ -15,6 +15,15 @@ from sidekick.dedup import find_duplicate
 logger = logging.getLogger(__name__)
 
 
+# Synthesis tier per item complexity. Mirrors ``PriorityQueue._route`` so the
+# chosen model's latency fits the lane's wall-clock timeout (fast=15s,
+# standard=30s, deep=90s). Keep in sync with ``_route``.
+_COMPLEXITY_TIER: dict[str, str] = {
+    "simple": "fast",
+    "medium": "standard",
+}
+
+
 @dataclass
 class ActionResult:
     """Result produced by an action pipeline."""
@@ -225,7 +234,12 @@ class PriorityQueue:
         """Route a queue item to the correct action pipeline."""
         item = qi.item
         action_type = item.type
-        tier = "deep"
+        # Match the synthesis tier to the lane budget so the model latency fits
+        # the wall-clock timeout. Hardcoding "deep" (the slowest model) forced
+        # the 15s fast lane and 30s standard lane to run claude-opus, which
+        # could not finish in time and expired with zero outputs. The mapping
+        # mirrors ``_route``: simple→fast, medium→standard, else→deep.
+        tier = _COMPLEXITY_TIER.get(item.complexity, "deep")
 
         # When notify is provided, surface the lead answer early via a
         # streaming callback. ``early_fired`` records whether it fired so the
