@@ -712,6 +712,7 @@ async def stop(deliverables: bool = True) -> str:
     summary = "No active session."
     saved_files: list[str] = []
     deliverables_block = ""
+    deliverables_path = ""
     if _state.session_log and _state.context:
         summary = _state.session_log.generate_summary(_state.context)
         path = _state.session_log.save_to_disk()
@@ -734,10 +735,29 @@ async def stop(deliverables: bool = True) -> str:
                 )
                 dp = save_deliverables(deliverables_block, _state.config)
                 if dp:
-                    saved_files.append(str(dp))
+                    deliverables_path = str(dp)
+                    saved_files.append(deliverables_path)
+                    # Toast the saved file so it isn't lost in a long stop
+                    # response — the extension offers an "Open File" action.
+                    sound = (
+                        _state.config.notifications.sound
+                        if getattr(_state.config, "notifications", None)
+                        else "chime"
+                    )
+                    notifier.write_deliverables_alert(deliverables_path, sound=sound)
             except Exception:
                 logger.exception("Deliverables generation failed")
                 deliverables_block = ""
+
+    # Lead with a prominent banner so the deliverables file is never lost even
+    # if the chat surface truncates the (long) inline content below.
+    banner = ""
+    if deliverables_path:
+        banner = (
+            f"\U0001f4e6 **Post-call deliverables saved:** `{deliverables_path}`\n"
+            f"(Draft follow-up email + action-item table + follow-up research "
+            f"batch \u2014 full content below.)\n\n---\n\n"
+        )
 
     if saved_files:
         summary += "\n\n**Saved files:**\n" + "\n".join(
@@ -753,7 +773,7 @@ async def stop(deliverables: bool = True) -> str:
     _state.recogniser = None
     _state.last_error = None
 
-    return _get_unseen_findings() + summary
+    return _get_unseen_findings() + banner + summary
 
 
 # ---------------------------------------------------------------------------

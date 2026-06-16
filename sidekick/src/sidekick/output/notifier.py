@@ -62,15 +62,24 @@ def _one_line_answer(result, limit: int = _ANSWER_MAX_CHARS) -> str:
 
 
 def _first_source_url(result) -> str:
-    """Return the first http(s) URL found in ``result.sources``, else ``""``.
+    """Return the first http(s) URL for the finding, else ``""``.
 
-    Sources are formatted as ``"<title> \u2014 <URL>"`` strings; this pulls the
-    bare URL so the extension can open it directly.
+    Prefers the structured ``result.sources`` list (formatted as
+    ``"<title> \u2014 <URL>"``). Many results built by the direct
+    ``research``/``prototype`` paths leave that list empty and carry their
+    citations inline in the ``answer`` text's ``Sources:`` block instead, so
+    we fall back to scanning the answer. Without this fallback the toast's
+    "Open Source" button never appears even when the answer cites URLs.
     """
     for src in getattr(result, "sources", []) or []:
         match = _URL_RE.search(str(src))
         if match:
             return match.group(0).rstrip(").,;")
+    # Fallback: first URL anywhere in the answer body (mirrors the auto-surface
+    # preamble, which already regex-extracts sources from the answer text).
+    match = _URL_RE.search(getattr(result, "answer", "") or "")
+    if match:
+        return match.group(0).rstrip(").,;")
     return ""
 
 
@@ -121,6 +130,36 @@ def write_alert(result, alerts_dir: Path | None = None) -> None:
             f.write(json.dumps(alert) + "\n")
     except Exception:
         logger.debug("Failed to write alert file", exc_info=True)
+
+
+def write_deliverables_alert(
+    path, sound: str = "chime", alerts_dir: Path | None = None
+) -> None:
+    """Append a 'deliverables ready' alert so the notify extension can toast it.
+
+    Post-call deliverables are saved to disk on ``stop``, but the file is easy
+    to miss in a long ``stop`` response. This writes a high-priority alert
+    carrying the file ``path`` so the ``sidekick-notify`` extension can raise a
+    toast with an "Open File" action, closing the discoverability gap.
+    """
+    target_dir = alerts_dir if alerts_dir is not None else _default_alerts_dir()
+    play_sound(sound)
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        alert = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "type": "deliverables",
+            "summary": "Post-call deliverables ready",
+            "answer": f"Saved to {Path(path).name}",
+            "source": "",
+            "file": str(path),
+            "confidence": "high",
+            "priority": "high",
+        }
+        with open(target_dir / "alerts.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(alert) + "\n")
+    except Exception:
+        logger.debug("Failed to write deliverables alert", exc_info=True)
 
 
 def notify(result, sound: str = "chime", alerts_dir: Path | None = None) -> None:

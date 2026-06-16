@@ -98,6 +98,54 @@ class TestWriteAlert:
         assert record["answer"] == ""
         assert record["source"] == ""
 
+    def test_source_falls_back_to_answer_url_when_sources_empty(self, tmp_path):
+        # The direct research/prototype paths leave result.sources empty but
+        # cite URLs inline in the answer — the toast's source must still resolve.
+        result = _FakeResult(
+            answer=(
+                "Deploy the standard on-premises data gateway.\n\n"
+                "Sources:\n  \u2022 MS Learn \u2014 "
+                "https://learn.microsoft.com/power-bi/connect-data/service-gateway-onprem"
+            ),
+            sources=(),
+        )
+        notifier.write_alert(result, alerts_dir=tmp_path)
+        record = json.loads((tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip())
+        assert record["source"] == (
+            "https://learn.microsoft.com/power-bi/connect-data/service-gateway-onprem"
+        )
+
+    def test_structured_sources_take_precedence_over_answer(self, tmp_path):
+        result = _FakeResult(
+            answer="Answer body. See http://inline.example/x for more.",
+            sources=("Title \u2014 https://structured.example/canonical",),
+        )
+        notifier.write_alert(result, alerts_dir=tmp_path)
+        record = json.loads((tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip())
+        assert record["source"] == "https://structured.example/canonical"
+
+
+class TestWriteDeliverablesAlert:
+    def test_writes_deliverables_alert_with_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")  # skip sound
+        notifier.write_deliverables_alert(
+            "/home/u/.sidekick/outputs/acme/deliverables_20260616_101010.md",
+            alerts_dir=tmp_path,
+        )
+        record = json.loads((tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip())
+        assert record["type"] == "deliverables"
+        assert record["summary"] == "Post-call deliverables ready"
+        assert record["answer"] == "Saved to deliverables_20260616_101010.md"
+        assert record["file"].endswith("deliverables_20260616_101010.md")
+        assert record["priority"] == "high"
+
+    def test_creates_dir_if_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        nested = tmp_path / "live"
+        assert not nested.exists()
+        notifier.write_deliverables_alert("/tmp/d.md", alerts_dir=nested)
+        assert (nested / "alerts.jsonl").exists()
+
 
 class TestOneLineAnswer:
     def test_strips_sources_section(self):
