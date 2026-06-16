@@ -145,5 +145,62 @@ class TestDrainQueueOffsets:
         assert seen == [0.0, 15.0]
 
 
+# ---------------------------------------------------------------------------
+# begin() / start() — pre-roll (5c)
+# ---------------------------------------------------------------------------
+
+
+class TestBeginPreroll:
+    @pytest.mark.asyncio
+    async def test_begin_is_idempotent_when_already_capturing(self):
+        # When capture is already running, begin() must return immediately
+        # without touching audio hardware (the guard is before the pyaudio
+        # import, so this is safe without a device).
+        cap = AudioCapture()
+        cap.is_capturing = True
+        cap.begin()  # must not raise / must not import pyaudio
+        assert cap.is_capturing is True
+
+    @pytest.mark.asyncio
+    async def test_start_reuses_already_begun_capture(self, monkeypatch):
+        # Simulates 5c pre-roll: begin() was called early, so start() must NOT
+        # begin again — it just drains the buffered (pre-roll) + live chunks.
+        cap = AudioCapture(max_queue_chunks=8)
+        began_again = {"v": False}
+
+        def _fake_begin():
+            began_again["v"] = True
+
+        monkeypatch.setattr(cap, "begin", _fake_begin)
+        cap.is_capturing = True  # pretend pre-roll already started
+        cap._queue.put_nowait((0.0, _chunk()))
+        cap._queue.put_nowait(None)
+
+        chunks = []
+        async for c in cap.start():
+            chunks.append(c)
+
+        assert began_again["v"] is False
+        assert len(chunks) == 1
+
+    @pytest.mark.asyncio
+    async def test_start_begins_when_not_yet_capturing(self, monkeypatch):
+        # No pre-roll: start() must lazily begin capture itself.
+        cap = AudioCapture(max_queue_chunks=8)
+
+        def _fake_begin():
+            cap.is_capturing = True
+            cap._queue.put_nowait((0.0, _chunk()))
+            cap._queue.put_nowait(None)
+
+        monkeypatch.setattr(cap, "begin", _fake_begin)
+
+        chunks = []
+        async for c in cap.start():
+            chunks.append(c)
+
+        assert len(chunks) == 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

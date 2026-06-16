@@ -175,6 +175,20 @@ async def _initialise_capture(state: SessionState) -> bool:
         return False
 
     loop = asyncio.get_running_loop()
+
+    # 5c pre-roll: create and BEGIN audio capture *before* loading the (slow)
+    # Whisper model, so the WASAPI stream buffers the opening of the meeting
+    # while the model loads instead of dropping the first ~minute. The bounded
+    # capture queue holds the pre-roll; once the model is ready _consume_audio
+    # drains the buffered audio first. Best-effort — if begin() fails (e.g. no
+    # device), start() opens capture lazily later as before.
+    state.audio_capture = AudioCapture()
+    try:
+        state.audio_capture.begin()
+        logger.info("Audio capture pre-roll started (buffering during model load).")
+    except Exception as e:  # noqa: BLE001 — fall back to lazy start in _consume_audio
+        logger.debug("Pre-roll capture begin failed (%s); will start lazily.", e)
+
     try:
         state.recogniser = await loop.run_in_executor(
             None, create_recogniser, state.config.speech
@@ -182,9 +196,13 @@ async def _initialise_capture(state: SessionState) -> bool:
     except Exception as e:
         state.last_error = f"Failed to load speech model: {e}"
         logger.exception(state.last_error)
+        # Stop the pre-roll capture we may have started so the device/thread
+        # do not leak when initialisation fails.
+        try:
+            state.audio_capture.stop()
+        except Exception:  # noqa: BLE001 — cleanup is best-effort
+            logger.debug("Pre-roll capture stop after model-load failure raised", exc_info=True)
         return False
-
-    state.audio_capture = AudioCapture()
 
     # Seed the derived Whisper vocabulary prior (Phase 5b) from the same
     # engagement inputs that feed grounding — always available at listen time.

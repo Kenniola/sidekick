@@ -70,49 +70,73 @@ class AudioCapture:
         self._source_rate: int = 0
         self._source_channels: int = 0
 
+        # PyAudio handle, owned across begin()/start()/stop() so capture can be
+        # started early for pre-roll (5c) and torn down cleanly later.
+        self._pa = None
+
     async def start(self) -> AsyncIterator[np.ndarray]:
-        """Begin capturing and yield audio chunks (float32, 16kHz, mono).
+        """Begin capturing (if not already) and yield audio chunks.
 
-        Each yielded array is approximately ``chunk_duration`` seconds long.
-        Silent chunks (RMS below ``silence_threshold``) are skipped.
+        If :meth:`begin` was already called (5c pre-roll), this reuses the
+        running capture and simply drains the buffered + live chunks; otherwise
+        it starts capture now. Each yielded array is approximately
+        ``chunk_duration`` seconds long. Silent chunks (RMS below
+        ``silence_threshold``) are skipped.
         """
-        import pyaudiowpatch as pyaudio
+        if not self.is_capturing:
+            self.begin()
 
-        pa = pyaudio.PyAudio()
         try:
-            device = self._resolve_device(pa)
-            self._source_rate = int(device["defaultSampleRate"])
-            self._source_channels = device["maxInputChannels"]
-
-            logger.info(
-                "Audio capture: %s (rate=%d, ch=%d)",
-                device["name"],
-                self._source_rate,
-                self._source_channels,
-            )
-
-            self.is_capturing = True
-            self._loop = asyncio.get_running_loop()
-
-            # Start capture thread
-            self._thread = threading.Thread(
-                target=self._capture_thread,
-                args=(pa, device),
-                daemon=True,
-            )
-            self._thread.start()
-
             # Drain queued chunks (offset-tagged) and yield the audio.
             async for chunk in self._drain_queue():
                 yield chunk
-
         finally:
             self.is_capturing = False
             # Wait for capture thread to close its stream before
             # terminating PyAudio — avoids C-level crash.
             if self._thread and self._thread.is_alive():
                 self._thread.join(timeout=3.0)
-            pa.terminate()
+            if self._pa is not None:
+                self._pa.terminate()
+                self._pa = None
+
+    def begin(self) -> None:
+        """Open the capture device and start the reader thread WITHOUT draining.
+
+        Lets the WASAPI stream buffer audio (pre-roll, 5c) while slower startup
+        work — notably loading the Whisper model — runs concurrently, so the
+        opening of the meeting is not lost while the model loads. Idempotent: a
+        subsequent :meth:`start` reuses an already-begun capture. Must be called
+        from the event-loop thread (it captures the running loop for
+        thread-safe enqueues from the reader thread).
+        """
+        if self.is_capturing:
+            return
+
+        import pyaudiowpatch as pyaudio
+
+        self._pa = pyaudio.PyAudio()
+        device = self._resolve_device(self._pa)
+        self._source_rate = int(device["defaultSampleRate"])
+        self._source_channels = device["maxInputChannels"]
+
+        logger.info(
+            "Audio capture: %s (rate=%d, ch=%d)",
+            device["name"],
+            self._source_rate,
+            self._source_channels,
+        )
+
+        self.is_capturing = True
+        self._loop = asyncio.get_running_loop()
+
+        # Start capture thread
+        self._thread = threading.Thread(
+            target=self._capture_thread,
+            args=(self._pa, device),
+            daemon=True,
+        )
+        self._thread.start()
 
     async def _drain_queue(self) -> AsyncIterator[np.ndarray]:
         """Yield audio chunks from the queue, tracking each chunk's offset.

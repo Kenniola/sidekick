@@ -135,3 +135,70 @@ class TestDetectDomains:
         assert s.context.detected_domains == ["Cosmos DB"]
         assert s.grounding_cache is None
         assert s.domains_detected is True
+
+
+class TestInitialiseCapturePreroll:
+    """5c: audio capture must begin (pre-roll) before the slow model load so
+    the opening of the meeting buffers instead of being dropped."""
+
+    class _FakeCapture:
+        def __init__(self, calls, *a, **k):
+            self._calls = calls
+
+        def begin(self):
+            self._calls.append("begin")
+
+        def stop(self):
+            self._calls.append("stop")
+
+        def list_devices(self):
+            return []
+
+    @pytest.mark.asyncio
+    async def test_capture_begins_before_model_load(self, monkeypatch):
+        s = _make_state()
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            "sidekick.transcript.audio_capture.AudioCapture",
+            lambda *a, **k: self._FakeCapture(calls),
+        )
+
+        def _fake_create_recogniser(_speech):
+            calls.append("load")
+            return MagicMock()
+
+        monkeypatch.setattr(
+            "sidekick.transcript.speech_recogniser.create_recogniser",
+            _fake_create_recogniser,
+        )
+
+        ok = await engine._initialise_capture(s)
+
+        assert ok is True
+        assert "begin" in calls and "load" in calls
+        assert calls.index("begin") < calls.index("load")
+
+    @pytest.mark.asyncio
+    async def test_model_load_failure_stops_preroll_capture(self, monkeypatch):
+        s = _make_state()
+        calls: list[str] = []
+
+        monkeypatch.setattr(
+            "sidekick.transcript.audio_capture.AudioCapture",
+            lambda *a, **k: self._FakeCapture(calls),
+        )
+
+        def _boom(_speech):
+            calls.append("load")
+            raise RuntimeError("model boom")
+
+        monkeypatch.setattr(
+            "sidekick.transcript.speech_recogniser.create_recogniser", _boom
+        )
+
+        ok = await engine._initialise_capture(s)
+
+        assert ok is False
+        # The pre-roll capture we started must be torn down on failure.
+        assert "stop" in calls
