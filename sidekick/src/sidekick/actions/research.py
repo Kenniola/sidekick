@@ -219,7 +219,7 @@ class ResearchPipeline:
             if key_facts:
                 parts.append("Key facts:\n" + "\n".join(f"  - {f}" for f in key_facts[-8:]))
             if parts:
-                customer_block = f"\n\nCUSTOMER ENGAGEMENT:\n" + "\n".join(parts)
+                customer_block = "\n\nCUSTOMER ENGAGEMENT:\n" + "\n".join(parts)
 
         user_prompt = f"""QUESTION: {question}
 

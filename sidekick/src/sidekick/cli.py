@@ -307,14 +307,14 @@ def _cmd_list_configs():
     user_dir = get_user_dir()
 
     if not profiles:
-        print(f"No customer profiles found.")
+        print("No customer profiles found.")
         print(f"Add profiles to: {user_dir / 'customers.yaml'}")
         return
 
     print(f"Available profiles ({user_dir}):\n")
     for name in profiles:
         print(f"  \u2022 {name}")
-    print(f"\nUsage: @sidekick listen --config <profile>")
+    print("\nUsage: @sidekick listen --config <profile>")
 
 
 def _cmd_models():
@@ -365,10 +365,10 @@ def _cmd_uninstall():
     print()
     print("This will remove:")
     print(f"  1. {user_dir}/ (config, cache, outputs, session logs)")
-    print(f"  2. MCP server entry from VS Code User settings")
-    print(f"  3. sidekick-notify VS Code extension")
-    print(f"  4. sidekick agent definition from VS Code User prompts")
-    print(f"  5. sidekick-copilot uv tool environment")
+    print("  2. MCP server entry from VS Code User settings")
+    print("  3. sidekick-notify VS Code extension")
+    print("  4. sidekick agent definition from VS Code User prompts")
+    print("  5. sidekick-copilot uv tool environment")
     print()
 
     # Check --yes flag for non-interactive use
@@ -394,7 +394,7 @@ def _cmd_uninstall():
     if code_cmd:
         try:
             result = subprocess.run(
-                [code_cmd, "--uninstall-extension", "sidekick-copilot.sidekick-notify"],
+                [code_cmd, "--uninstall-extension", "koladimeji.sidekick-notify"],
                 capture_output=True, text=True, timeout=30,
             )
             if result.returncode == 0:
@@ -403,7 +403,7 @@ def _cmd_uninstall():
                 print("\u2713 sidekick-notify extension not found (already removed)")
         except (subprocess.TimeoutExpired, OSError):
             print("\u26a0\ufe0f  Could not uninstall extension — run manually:")
-            print("   code --uninstall-extension sidekick-copilot.sidekick-notify")
+            print("   code --uninstall-extension koladimeji.sidekick-notify")
     else:
         print("\u26a0\ufe0f  VS Code CLI not found — uninstall extension manually if installed")
 
