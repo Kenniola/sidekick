@@ -98,6 +98,29 @@ def _format_ts(seconds: float) -> str:
     return f"{h}:{m:02d}:{s:06.3f}"
 
 
+# Number of trailing words carried from one chunk into the next as a coherence
+# prompt (5e). Bounded so the combined prompt stays well within Whisper's
+# prompt token budget and a bad chunk cannot poison many later chunks.
+_COHERENCE_TAIL_WORDS = 24
+
+
+def _combine_prompt(vocab_prompt: str | None, prev_tail: str) -> str | None:
+    """Combine the domain-vocabulary prior (5b) with the previous chunk's tail (5e).
+
+    Either part may be empty/None. Returns ``None`` when both are empty so
+    Whisper keeps its default (unconditioned) behaviour.
+    """
+    parts = [p for p in (vocab_prompt, prev_tail) if p]
+    return " ".join(parts) if parts else None
+
+
+def _tail_text(text: str, max_words: int = _COHERENCE_TAIL_WORDS) -> str:
+    """Return the last ``max_words`` words of ``text`` (the cross-chunk tail)."""
+    words = text.split()
+    return " ".join(words[-max_words:])
+
+
+
 class SpeechRecogniser(Protocol):
     """Interface for speech-to-text backends."""
 
@@ -177,6 +200,10 @@ class WhisperRecogniser:
         self.device = device
         self._last_text: str = ""
         self._repeat_count: int = 0
+        # Per-speaker trailing text from the previous chunk (5e). Keyed by
+        # speaker so dual capture ("(me)"/"(remote)") keeps each side's
+        # cross-chunk continuity independent.
+        self._prev_tail: dict[str, str] = {}
         logger.info("Whisper model loaded (%s, device=%s).", model_size, device)
 
     async def transcribe_chunk(
@@ -232,14 +259,23 @@ class WhisperRecogniser:
 
         Runs in a worker thread (see :meth:`transcribe_chunk`). Transcriptions
         are issued serially by the consume loop, so the repetition-filter state
-        (``_last_text`` / ``_repeat_count``) is never mutated concurrently.
+        (``_last_text`` / ``_repeat_count``) and the cross-chunk coherence tail
+        (``_prev_tail``) are never mutated concurrently.
         """
+        # 5e cross-chunk coherence: prepend the previous chunk's trailing words
+        # for this speaker to the vocabulary prior so Whisper has lexical
+        # context across the 5-second chunk boundary (our chunk-at-a-time
+        # equivalent of condition_on_previous_text). Reduces words clipped or
+        # garbled at chunk edges and improves proper-noun continuity.
+        prev_tail = self._prev_tail.get(speaker, "")
+        effective_prompt = _combine_prompt(initial_prompt, prev_tail)
+
         segments, _info = self.model.transcribe(
             audio,
             beam_size=5,
             language="en",
             vad_filter=True,
-            initial_prompt=initial_prompt,
+            initial_prompt=effective_prompt,
         )
 
         lines: list[TranscriptLine] = []
@@ -274,6 +310,14 @@ class WhisperRecogniser:
                     speaker=speaker,
                     text=text,
                 )
+            )
+
+        # 5e: remember this chunk's trailing words as the coherence prompt for
+        # this speaker's next chunk. Only update when the chunk produced text so
+        # a silent/dropped chunk does not erase the running context.
+        if lines:
+            self._prev_tail[speaker] = _tail_text(
+                " ".join(ln.text for ln in lines)
             )
 
         return lines

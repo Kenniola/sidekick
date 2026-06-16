@@ -88,6 +88,7 @@ def _install_fake_whisper(monkeypatch, segments):
         self.device = device or "cpu"
         self._last_text = ""
         self._repeat_count = 0
+        self._prev_tail = {}
 
     monkeypatch.setattr(sr.WhisperRecogniser, "__init__", _fake_init)
     return fake
@@ -327,6 +328,98 @@ class TestTranscribeChunk:
         # ``ticks`` would be ~0. Off-loaded, it advances many times during 0.3s.
         ticks = asyncio.run(_run())
         assert ticks >= 5
+
+
+# ---------------------------------------------------------------------------
+# Phase 5e — cross-chunk coherence (previous-text conditioning)
+# ---------------------------------------------------------------------------
+
+
+class TestCoherencePromptHelpers:
+    def test_combine_prompt_joins_both(self):
+        assert sr._combine_prompt("vocab", "tail") == "vocab tail"
+
+    def test_combine_prompt_skips_empty(self):
+        assert sr._combine_prompt(None, "tail") == "tail"
+        assert sr._combine_prompt("vocab", "") == "vocab"
+
+    def test_combine_prompt_none_when_both_empty(self):
+        assert sr._combine_prompt(None, "") is None
+
+    def test_tail_text_keeps_last_words(self):
+        text = " ".join(str(i) for i in range(50))
+        tail = sr._tail_text(text, max_words=3)
+        assert tail == "47 48 49"
+
+
+class TestCrossChunkCoherence:
+    def test_prev_tail_feeds_next_chunk_prompt(self, monkeypatch):
+        fake = _install_fake_whisper(
+            monkeypatch,
+            [_Seg(0.0, 1.0, "alpha"), _Seg(1.0, 2.0, "omega")],
+        )
+        rec = sr.WhisperRecogniser()
+        audio = np.zeros(16_000, dtype=np.float32)
+
+        asyncio.run(rec.transcribe_chunk(audio))
+        asyncio.run(rec.transcribe_chunk(audio))
+
+        # First chunk had no prior context; the second is conditioned on the
+        # first chunk's trailing text.
+        assert fake.calls[0]["initial_prompt"] is None
+        assert "omega" in fake.calls[1]["initial_prompt"]
+        assert "alpha" in fake.calls[1]["initial_prompt"]
+
+    def test_tail_is_per_speaker(self, monkeypatch):
+        fake = _install_fake_whisper(
+            monkeypatch,
+            [_Seg(0.0, 1.0, "alpha"), _Seg(1.0, 2.0, "omega")],
+        )
+        rec = sr.WhisperRecogniser()
+        audio = np.zeros(16_000, dtype=np.float32)
+
+        asyncio.run(rec.transcribe_chunk(audio, speaker="(me)"))
+        asyncio.run(rec.transcribe_chunk(audio, speaker="(remote)"))
+
+        # The remote speaker's first chunk must not inherit the local speaker's
+        # tail — its context is independent.
+        assert fake.calls[1]["initial_prompt"] is None
+
+    def test_vocab_and_tail_combined_on_second_chunk(self, monkeypatch):
+        fake = _install_fake_whisper(
+            monkeypatch,
+            [_Seg(0.0, 1.0, "alpha"), _Seg(1.0, 2.0, "omega")],
+        )
+        rec = sr.WhisperRecogniser()
+        audio = np.zeros(16_000, dtype=np.float32)
+
+        asyncio.run(
+            rec.transcribe_chunk(audio, initial_prompt="Glossary: Denodo.")
+        )
+        asyncio.run(
+            rec.transcribe_chunk(audio, initial_prompt="Glossary: Denodo.")
+        )
+
+        prompt = fake.calls[1]["initial_prompt"]
+        assert "Denodo" in prompt  # vocabulary prior (5b)
+        assert "omega" in prompt   # previous-chunk tail (5e)
+
+    def test_silent_chunk_does_not_erase_tail(self, monkeypatch):
+        # A chunk that yields no lines must not wipe the running context.
+        fake = _install_fake_whisper(
+            monkeypatch, [_Seg(0.0, 1.0, "alpha omega")]
+        )
+        rec = sr.WhisperRecogniser()
+        audio = np.zeros(16_000, dtype=np.float32)
+
+        asyncio.run(rec.transcribe_chunk(audio))  # sets tail
+        fake._segments = []  # next chunk transcribes to nothing
+        asyncio.run(rec.transcribe_chunk(audio))
+        fake._segments = [_Seg(0.0, 1.0, "next")]
+        asyncio.run(rec.transcribe_chunk(audio))
+
+        # The third chunk's prompt still carries the first chunk's tail.
+        assert "omega" in fake.calls[2]["initial_prompt"]
 
 
 # ---------------------------------------------------------------------------
