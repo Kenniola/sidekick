@@ -240,6 +240,8 @@ async def _initialise_capture(state: SessionState) -> bool:
         vocab.seed(config_seed_text(state.config))
         if isinstance(getattr(state, "grounding_cache", None), str):
             vocab.seed(state.grounding_cache)
+        # Per-customer glossary outranks derived seed terms (verbatim, weighted).
+        vocab.seed_terms(getattr(state.config, "glossary", None) or [])
         state.vocabulary = vocab
         logger.info("Whisper vocabulary prior seeded (%d terms).", len(vocab))
     except Exception as e:  # noqa: BLE001 — prior is best-effort, never fatal

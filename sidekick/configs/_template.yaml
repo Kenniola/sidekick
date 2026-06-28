@@ -29,3 +29,24 @@ acme:
   # rules:
   #   - Always distinguish GA vs Preview features
   #   - Cite sources for every claim
+
+  # Uncomment to seed the speech-to-text vocabulary with this engagement's
+  # proper nouns (project/team/product names). Recognised from the first chunk
+  # — the strongest single lever for transcribing names correctly.
+  # glossary:
+  #   - Denodo
+  #   - OneLake
+  #   - HMCTS Crime MI
+  #   - Caseworker Portal
+
+  # Uncomment to correct speech-to-text mishears specific to this customer.
+  # Left = what Whisper tends to hear, right = the intended term.
+  # stt_corrections:
+  #   "on lake": "OneLake"
+  #   "crime em eye": "Crime MI"
+  #   "case worker": "Caseworker"
+
+  # Uncomment to attribute speech to "(me)" vs "(remote)" by also capturing
+  # your microphone (default: system audio only, tagged "(audio)").
+  # speech:
+  #   capture_microphone: true

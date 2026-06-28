@@ -8,6 +8,11 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Added
 
+- **Phase 5f — per-call tailoring levers.** Two config surfaces that sharpen accuracy for a specific engagement, both inert by default.
+  - **`glossary:`** (list, on the customer profile) — engagement proper nouns (project / team / product names) seeded verbatim into the Whisper vocabulary prior at high weight via the new `Vocabulary.seed_terms()`, so they are recognised from the first chunk (before in-session adaptation has anything to learn from) and outrank derived seed terms. Unlike `seed()`, multi-word phrases are trusted as-is rather than mined out of free text. (`tests/test_vocabulary.py`, `tests/test_config_merge.py`)
+  - **`stt_corrections:`** (mapping `"heard" → "meant"`, on the customer profile) — appended to the analyst system prompt by the new `build_analyst_system_prompt(config)` so the LLM un-mangles a customer's specific jargon on top of the built-in general examples. The classifier builds the prompt once per session. (`tests/test_analyst_prompt.py`)
+  - Both options are documented in `configs/_template.yaml` alongside the existing `speech.capture_microphone` (5d) speaker-attribution toggle.
+
 - **Config-driven LLM models** — per-tier model fallback chains are now defined in `configs/default.yaml` under a new `models:` block (`fast` / `standard` / `deep`, each an ordered list of `"provider:model"` strings) instead of being hard-coded in `llm.py`. A new `ModelsConfig` dataclass resolves them, and `set_active_models()` registers the active config so every `call_llm(tier=…)` call honours it without threading config through each call site.
   - **Env override:** `SIDEKICK_MODEL_<TIER>` (e.g. `SIDEKICK_MODEL_DEEP="copilot:claude-opus-4.8,copilot:gpt-4.1"`) swaps a tier's chain at runtime with no YAML edit.
   - **`sidekick models [profile]`** CLI command prints the resolved chain per tier (showing primary vs fallback and any active env override).
@@ -38,6 +43,10 @@ All notable changes to sidekick-copilot are documented in this file.
   - **Whisper device auto-detect (4d)** — `device: auto | cpu | cuda` (config / `SIDEKICK_WHISPER_DEVICE` env / param). `auto` uses a CUDA GPU when present (compute `float16`) and otherwise CPU (`int8`); explicit `compute_type` is always honoured and a runtime GPU init failure falls back to CPU. **Honest constraint:** the faster-whisper (CTranslate2) backend supports CUDA GPU and CPU only — there is no NPU/DirectML path, so this covers GPU-vs-CPU rather than NPU. VAD gating was already enabled via `vad_filter=True`. (`tests/test_speech_recogniser.py`)
 
 ### Fixed
+
+- **Uninstall self-lock on Windows** — `sidekick uninstall` runs from the `sidekick.exe` that lives *inside* the uv tool environment it is trying to delete, so `uv tool uninstall` hit a Windows file lock, failed silently, and printed a misleading "not in uv tools (already removed)" while leaving a corrupted `%APPDATA%\uv\tools\sidekick-copilot` behind. The removal is now delegated to a detached helper that waits for this process to exit before running `uv tool uninstall` (new `_running_inside_uv_tool()` detection + `_uninstall_uv_tool()`); the non-self-locked path reports the real outcome instead of always claiming success. (`tests/test_cli_install.py`)
+
+- **MCP registration now pins `SIDEKICK_WORKSPACE_ROOT`** — `_register_mcp_server` writes `"env": {"SIDEKICK_WORKSPACE_ROOT": "${workspaceFolder}"}` into the `mcp.json` server entry. `build_grounding_context()` and the research pipeline both default this to `"."`; without it they resolved relative to the server's process cwd and silently skipped the team's `.github/instructions` standards. VS Code substitutes the open workspace at launch. (`tests/test_cli_install.py`)
 
 - **Removed stale Azure Speech branches** left over from the v0.3.0 removal: the `listen` banner and `status` tool referenced `_config.speech.azure_region` (no longer a field) behind a now-unreachable `backend == "azure"` guard, and the `listen` docstring still said "Whisper or Azure". Backend label is now simply "Whisper (local)".
 

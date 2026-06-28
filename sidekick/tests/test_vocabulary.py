@@ -119,6 +119,26 @@ class TestVocabulary:
         assert top[0] == "Denodo"
         assert len(top) == 2
 
+    def test_seed_terms_added_verbatim(self):
+        # Glossary phrases are trusted as-is, including multi-word entries that
+        # free-text extraction would split or drop.
+        v = Vocabulary()
+        v.seed_terms(["HMCTS Crime MI", "Caseworker Portal"])
+        assert "HMCTS Crime MI" in v.terms()
+        assert "Caseworker Portal" in v.terms()
+
+    def test_seed_terms_outrank_plain_seed(self):
+        v = Vocabulary(max_terms=1)
+        v.seed("Alpha Bravo Charlie")  # weight 1 each
+        v.seed_terms(["Denodo"])  # weight 3
+        assert v.terms()[0] == "Denodo"
+
+    def test_seed_terms_empty_is_noop(self):
+        v = Vocabulary()
+        v.seed_terms([])
+        v.seed_terms(None)
+        assert len(v) == 0
+
     def test_terms_capped_at_max(self):
         v = Vocabulary(max_terms=3)
         words = [f"Term{a}{b}" for a in "abcd" for b in "abcde"]

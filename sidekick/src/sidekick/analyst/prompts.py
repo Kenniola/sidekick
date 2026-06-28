@@ -128,6 +128,31 @@ Return a JSON object with an array of items, each containing:
 }"""
 
 
+def build_analyst_system_prompt(config=None) -> str:
+    """Return the analyst system prompt, with per-engagement STT corrections.
+
+    The built-in SPEECH-TO-TEXT WARNING covers general Microsoft data-platform
+    mishears. Customer-specific jargon (project, team, and product names that
+    Whisper mangles) is added from ``config.stt_corrections`` so the analyst
+    un-mangles those terms too, without editing the shared base prompt.
+    """
+    corrections = getattr(config, "stt_corrections", None) or {}
+    if not corrections:
+        return ANALYST_SYSTEM_PROMPT
+
+    lines = "\n".join(
+        f'- "{heard}" → "{meant}"' for heard, meant in corrections.items()
+    )
+    addendum = (
+        "\n\nENGAGEMENT-SPECIFIC SPEECH-TO-TEXT CORRECTIONS:\n"
+        "This customer's calls also commonly mishear the following. If you see "
+        "the left-hand phrasing, use the right-hand term:\n"
+        f"{lines}"
+    )
+    return ANALYST_SYSTEM_PROMPT + addendum
+
+
+
 CONSULTANT_ADVISOR_PROMPT = """\
 You are a senior consulting advisor for a technology engagement. Your job is to \
 analyse a live meeting transcript and recommend the most valuable questions the \

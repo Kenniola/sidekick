@@ -253,6 +253,14 @@ class SidekickConfig:
     domains: list[str] = field(default_factory=lambda: [
         "Microsoft Fabric", "Power BI", "Azure Data Platform",
     ])
+    # Per-customer proper nouns / product / project / team names. Seeded into
+    # the Whisper vocabulary prior at high weight so they are recognised from
+    # the first chunk, before in-session adaptation has anything to learn from.
+    glossary: list[str] = field(default_factory=list)
+    # Per-engagement speech-to-text corrections, e.g. {"on lake": "OneLake"}.
+    # Appended to the analyst system prompt so the LLM un-mangles the customer's
+    # specific jargon on top of the built-in general examples.
+    stt_corrections: dict[str, str] = field(default_factory=dict)
     sensitivity: SensitivityConfig = field(default_factory=SensitivityConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
     phases: PhasesConfig = field(default_factory=PhasesConfig)
@@ -438,6 +446,12 @@ def _parse_config(raw: dict) -> SidekickConfig:
         consultant_names=consultant,
         client_names=client,
         domains=raw.get("domains", ["Microsoft Fabric", "Power BI", "Azure Data Platform"]),
+        glossary=[str(t).strip() for t in (raw.get("glossary") or []) if str(t).strip()],
+        stt_corrections={
+            str(k): str(v)
+            for k, v in (raw.get("stt_corrections") or {}).items()
+            if str(k).strip() and str(v).strip()
+        },
         sensitivity=SensitivityConfig(
             trigger_threshold=sensitivity_raw.get("trigger_threshold", 0.5),
             noise_filter=sensitivity_raw.get("noise_filter", "medium"),

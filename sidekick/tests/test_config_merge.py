@@ -64,6 +64,22 @@ class TestParseConfig:
         c = _parse_config({"speech": {"capture_microphone": "yes"}})
         assert c.speech.capture_microphone is True
 
+    def test_glossary_defaults_empty(self):
+        assert _parse_config({}).glossary == []
+
+    def test_glossary_parsed_and_trimmed(self):
+        c = _parse_config({"glossary": ["Denodo", "  OneLake  ", "", "   "]})
+        assert c.glossary == ["Denodo", "OneLake"]
+
+    def test_stt_corrections_defaults_empty(self):
+        assert _parse_config({}).stt_corrections == {}
+
+    def test_stt_corrections_parsed_and_filtered(self):
+        c = _parse_config(
+            {"stt_corrections": {"on lake": "OneLake", "": "x", "y": ""}}
+        )
+        assert c.stt_corrections == {"on lake": "OneLake"}
+
     def test_models_section_parsed(self):
         c = _parse_config({"models": {"fast": ["copilot:x"]}})
         assert c.models.fast == ["copilot:x"]

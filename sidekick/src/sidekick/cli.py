@@ -260,6 +260,15 @@ def _register_mcp_server():
             "-Command",
             f"$env:GITHUB_TOKEN = (gh auth token); & '{python_path}' -m sidekick.server",
         ],
+        # Point grounding/research at the user's currently open workspace. Both
+        # build_grounding_context() and the research pipeline read
+        # SIDEKICK_WORKSPACE_ROOT (default "."); without this they resolve
+        # relative to the MCP server's process cwd, which is unreliable and
+        # silently skips the team's .github/instructions standards. VS Code
+        # substitutes ${workspaceFolder} when it launches the server.
+        "env": {
+            "SIDEKICK_WORKSPACE_ROOT": "${workspaceFolder}",
+        },
     }
 
     # Load or create mcp.json
@@ -356,6 +365,98 @@ def _cmd_models():
     print('  $env:SIDEKICK_MODEL_DEEP = "copilot:claude-opus-4.8,copilot:gpt-4.1"')
 
 
+def _running_inside_uv_tool() -> bool:
+    """True when the current interpreter lives inside the uv tool environment.
+
+    When ``sidekick uninstall`` is launched via the installed ``sidekick.exe``,
+    ``sys.executable`` is the Python interpreter *inside*
+    ``…/uv/tools/sidekick-copilot``. uv cannot delete that tree while this
+    process holds files in it (Windows file lock), so we must defer the removal
+    until after we exit.
+    """
+    exe = str(Path(sys.executable).resolve()).lower().replace("\\", "/")
+    return "/uv/tools/sidekick-copilot" in exe
+
+
+def _uninstall_uv_tool() -> None:
+    """Remove the ``sidekick-copilot`` uv tool environment.
+
+    Historically this ran ``uv tool uninstall`` directly from inside the tool's
+    own environment, which Windows file-locks — the failure was swallowed and
+    reported as the misleading "not in uv tools (already removed)", leaving a
+    corrupted ``%APPDATA%\\uv\\tools\\sidekick-copilot`` behind. When we detect
+    that self-lock we hand the uninstall to a detached helper that waits for
+    this process to exit first; otherwise we remove it synchronously with
+    honest messaging.
+    """
+    import os
+
+    uv_cmd = shutil.which("uv")
+    if not uv_cmd:
+        print(
+            "\u26a0\ufe0f  uv not found — if installed via pip, run: pip uninstall sidekick-copilot"
+        )
+        return
+
+    if _running_inside_uv_tool() and sys.platform == "win32":
+        # Spawn a detached PowerShell that waits for *this* PID to exit, then
+        # runs the uninstall once the file lock is released.
+        parent_pid = os.getpid()
+        ps_script = (
+            f"$ppid = {parent_pid}; "
+            "while (Get-Process -Id $ppid -ErrorAction SilentlyContinue) "
+            "{ Start-Sleep -Milliseconds 300 }; "
+            f"& '{uv_cmd}' tool uninstall sidekick-copilot | Out-Null"
+        )
+        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        CREATE_NO_WINDOW = 0x08000000
+        try:
+            subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    ps_script,
+                ],
+                creationflags=(
+                    DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+                ),
+                close_fds=True,
+            )
+            print(
+                "\u2713 Scheduled sidekick-copilot uv tool removal "
+                "(completes a moment after this process exits)"
+            )
+        except OSError:
+            print("\u26a0\ufe0f  Could not schedule uv tool removal — once this exits, run:")
+            print("   uv tool uninstall sidekick-copilot")
+        return
+
+    # Not self-locked — uninstall now and report the real outcome.
+    try:
+        result = subprocess.run(
+            [uv_cmd, "tool", "uninstall", "sidekick-copilot"],
+            capture_output=True, text=True, timeout=30,
+        )
+        combined = (result.stdout + result.stderr).lower()
+        if result.returncode == 0:
+            print("\u2713 Removed sidekick-copilot uv tool environment")
+        elif "not installed" in combined or "no tool" in combined or "not found" in combined:
+            print("\u2713 sidekick-copilot not in uv tools (already removed)")
+        else:
+            print("\u26a0\ufe0f  uv tool uninstall failed — run manually:")
+            print("   uv tool uninstall sidekick-copilot")
+            tail = (result.stderr or result.stdout).strip().splitlines()
+            if tail:
+                print(f"   ({tail[-1]})")
+    except (subprocess.TimeoutExpired, OSError):
+        print("\u26a0\ufe0f  Could not remove uv tool — run manually:")
+        print("   uv tool uninstall sidekick-copilot")
+
+
 def _cmd_uninstall():
     """Remove all sidekick artifacts from the system."""
     user_dir = _get_user_dir()
@@ -422,22 +523,7 @@ def _cmd_uninstall():
         print(f"\u2713 {user_dir}/ not found (already removed)")
 
     # 5. Remove uv tool environment
-    uv_cmd = shutil.which("uv")
-    if uv_cmd:
-        try:
-            result = subprocess.run(
-                [uv_cmd, "tool", "uninstall", "sidekick-copilot"],
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode == 0:
-                print("\u2713 Removed sidekick-copilot uv tool environment")
-            else:
-                print("\u2713 sidekick-copilot not in uv tools (already removed)")
-        except (subprocess.TimeoutExpired, OSError):
-            print("\u26a0\ufe0f  Could not remove uv tool — run manually:")
-            print("   uv tool uninstall sidekick-copilot")
-    else:
-        print("\u26a0\ufe0f  uv not found — if installed via pip, run: pip uninstall sidekick-copilot")
+    _uninstall_uv_tool()
 
     print()
     print("\u2501" * 40)

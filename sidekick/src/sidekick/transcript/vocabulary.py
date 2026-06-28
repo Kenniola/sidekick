@@ -122,6 +122,21 @@ class Vocabulary:
             for term in extract_terms(text):
                 self._add(term, weight)
 
+    def seed_terms(self, terms, *, weight: float = 3.0) -> None:
+        """Add explicit glossary terms verbatim (no extraction) at high weight.
+
+        Unlike :meth:`seed`, which mines terms out of free text, this trusts the
+        caller's list — used for the per-customer ``glossary:`` config so exact
+        proper nouns and multi-word phrases land in the prior from the first
+        chunk, outranking generic seed vocabulary.
+        """
+        if not terms:
+            return
+        for term in terms:
+            cleaned = str(term).strip()
+            if cleaned:
+                self._add(cleaned, weight)
+
     def update(self, texts, *, weight: float = 2.0) -> None:
         """Promote terms from LLM-corrected in-session text (key_facts, research).
 

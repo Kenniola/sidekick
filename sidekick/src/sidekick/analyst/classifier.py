@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field, fields
 
 from sidekick.analyst.context import MeetingContext
-from sidekick.analyst.prompts import ANALYST_SYSTEM_PROMPT
+from sidekick.analyst.prompts import build_analyst_system_prompt
 from sidekick.config import SidekickConfig
 from sidekick.dedup import similarity
 from sidekick.llm import call_llm, parse_llm_json
@@ -78,6 +78,7 @@ class TranscriptAnalyst:
     def __init__(self, config: SidekickConfig, context: MeetingContext | None = None):
         self.config = config
         self.context = context or MeetingContext()
+        self.system_prompt = build_analyst_system_prompt(config)
 
     async def analyse_chunk(self, chunk: list) -> list[ActionItem]:
         """Analyse new transcript lines against meeting context."""
@@ -87,7 +88,7 @@ class TranscriptAnalyst:
         prompt = self._build_prompt(chunk)
 
         response_text = await call_llm(
-            system_prompt=ANALYST_SYSTEM_PROMPT,
+            system_prompt=self.system_prompt,
             user_prompt=prompt,
             json_output=True,
             tier="fast",
