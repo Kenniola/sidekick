@@ -371,31 +371,47 @@ async def suggest_questions() -> str:
         phase=_state.context.current_phase,
     )
 
-    try:
-        # ``timeout`` on call_llm is the *per-HTTP-attempt* budget. The deep
-        # chain has several models, each retried with exponential backoff, so a
-        # throttled (429/5xx) upstream could otherwise stall this tool for
-        # minutes. Cap the whole call with an overall wall-clock budget so it
-        # always returns promptly, and degrade gracefully on timeout.
-        response_text = await asyncio.wait_for(
+    advisor_system_prompt = (
+        "You are a senior consulting advisor with deep expertise in "
+        f"{', '.join(_state.config.domains)}. "
+        "Think carefully through the reasoning chain before generating "
+        "questions. Return JSON only."
+    )
+
+    async def _suggest(tier: str, attempt_timeout: float, overall_timeout: float) -> str:
+        # ``timeout`` on call_llm is the *per-HTTP-attempt* budget; the
+        # ``asyncio.wait_for`` caps the whole call (incl. retries/backoff) with
+        # an overall wall-clock budget so a throttled upstream can't stall.
+        return await asyncio.wait_for(
             call_llm(
-                system_prompt=(
-                    "You are a senior consulting advisor with deep expertise in "
-                    f"{', '.join(_state.config.domains)}. "
-                    "Think carefully through the reasoning chain before generating "
-                    "questions. Return JSON only."
-                ),
+                system_prompt=advisor_system_prompt,
                 user_prompt=prompt,
                 json_output=True,
-                timeout=30.0,
-                tier="deep",
+                timeout=attempt_timeout,
+                tier=tier,
             ),
-            timeout=60.0,
+            timeout=overall_timeout,
         )
+
+    try:
+        # Prefer the deep (Opus) advisor for the richest reasoning, but cap it
+        # tightly. When the background research loop is hammering the same
+        # Copilot endpoint, the deep model gets throttled (429) and would
+        # otherwise time out with nothing to show. On timeout, fall back to the
+        # fast tier (gpt-4o-mini) — a different model deployment that is far
+        # less likely to be rate-limited — so the tool always returns usable
+        # suggestions, degrading quality gracefully instead of failing.
+        try:
+            response_text = await _suggest("deep", attempt_timeout=30.0, overall_timeout=40.0)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "suggest_questions deep tier timed out; falling back to fast tier"
+            )
+            response_text = await _suggest("fast", attempt_timeout=20.0, overall_timeout=25.0)
 
         data = parse_llm_json(response_text)
     except asyncio.TimeoutError:
-        logger.warning("suggest_questions timed out after 60s")
+        logger.warning("suggest_questions timed out (deep + fast fallback)")
         return (
             "Suggestions timed out (the model is busy — likely throttled while "
             "research is also running). Try `suggest_questions` again in a moment."

@@ -89,6 +89,7 @@ _TIER_CONFIG: dict[str, list[tuple[str, str]]] = {
         ("github_models", "gpt-4.1-mini"),
     ],
     "standard": [
+        ("copilot", "claude-opus-4.8"),
         ("copilot", "claude-sonnet-4.5"),
         ("copilot", "gpt-4.1"),
         ("github_models", "gpt-4.1-mini"),
