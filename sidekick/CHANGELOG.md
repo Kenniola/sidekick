@@ -7,7 +7,24 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
-
+- **Phase 3 (accuracy spec) — notification focus.** Replaces the toast-per-finding
+  overload with a calm, persistent feed and urgent-only toasts.
+  - **Sidekick Feed (B2)** — a persistent activity-bar TreeView (`sidekick-notify`
+    v0.4.0) tails `alerts.jsonl` into a live, scrollable list with per-type
+    icons, relative timestamps, rationale tooltips, and click-to-open
+    (source / file / chat). The feed is the durable record, so toasts no longer
+    need to persist.
+  - **Priority-gated toasts (B1)** — only `critical`/`high` findings raise a
+    toast now; everything else lives silently in the feed. The status-bar badge
+    counts **unseen high-priority** items only.
+  - **Supersede / dedup / TTL (B3)** — a new alert with an existing `id` updates
+    its feed row in place (no re-toast); a newer answer on the same `thread_id`
+    dims older ones; findings older than 10 min render as "stale".
+  - **Alert schema (B4)** — `notifier` now emits a stable `id`, the adjudicator
+    `rationale`, and `thread_id` on every alert. (`tests/test_notifier.py`)
+  - **Pure, tested feed logic (B5)** — `feedModel.ts` holds all the
+    add/supersede/dedup/badge/stale logic with no `vscode` import, covered by
+    11 `node --test` unit tests; `npm test` runs them.
 - **Phase 2 (accuracy spec) — structural transcript quality + speaker
   correctness.** Improves the raw transcript the classifier reads, and makes
   dual-capture speaker attribution robust. Defaults preserve current behaviour.

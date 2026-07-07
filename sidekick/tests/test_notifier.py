@@ -17,6 +17,7 @@ class _FakeResult:
     priority: str = "high"
     answer: str = ""
     sources: tuple = ()
+    rationale: str = ""
 
 
 class TestPlaySound:
@@ -49,6 +50,18 @@ class TestWriteAlert:
         assert record["confidence"] == "high"
         assert record["priority"] == "high"
         assert "timestamp" in record
+
+    def test_feed_fields_present(self, tmp_path):
+        result = _FakeResult(
+            action_type="sizing", question="F64 headroom?", rationale="ties to sizing goal"
+        )
+        notifier.write_alert(result, alerts_dir=tmp_path)
+        record = json.loads(
+            (tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip()
+        )
+        assert record["id"] == "sizing:F64 headroom?"
+        assert record["rationale"] == "ties to sizing goal"
+        assert record["thread_id"] == ""
 
     def test_appends_multiple(self, tmp_path):
         notifier.write_alert(_FakeResult(question="Q1"), alerts_dir=tmp_path)

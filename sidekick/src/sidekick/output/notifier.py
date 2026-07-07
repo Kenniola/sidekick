@@ -125,6 +125,10 @@ def write_alert(result, alerts_dir: Path | None = None) -> None:
             "source": _first_source_url(result),
             "confidence": getattr(result, "confidence", "medium"),
             "priority": getattr(result, "priority", "medium"),
+            # Stable key for feed supersede/dedup (matches QueueItem.id shape).
+            "id": f"{result.action_type}:{(getattr(result, 'question', '') or '')[:40]}",
+            "rationale": getattr(result, "rationale", "") or "",
+            "thread_id": getattr(result, "thread_id", "") or "",
         }
         with open(target_dir / "alerts.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(alert) + "\n")
@@ -155,6 +159,9 @@ def write_deliverables_alert(
             "file": str(path),
             "confidence": "high",
             "priority": "high",
+            "id": f"deliverables:{Path(path).name}",
+            "rationale": "",
+            "thread_id": "",
         }
         with open(target_dir / "alerts.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(alert) + "\n")

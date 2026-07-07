@@ -38,6 +38,9 @@ class ActionResult:
     # Set when an early "lead answer" was already surfaced via the notify
     # callback during streaming, so the caller skips a duplicate final notify.
     early_notified: bool = False
+    # Why this was surfaced (from the Phase 1 adjudicator), carried into the
+    # notification for display in the feed. Empty for non-adjudicated results.
+    rationale: str = ""
 
     def format(self) -> str:
         return self.answer
@@ -211,6 +214,9 @@ class PriorityQueue:
                         self._execute(qi, research, prototype, context, domains, notify),
                         timeout=lane.timeout,
                     )
+                    # Carry the adjudicator's rationale onto the result so the
+                    # notification/feed can show why it was surfaced.
+                    result.rationale = getattr(qi.item, "rationale", "") or ""
                     qi.status = "done"
                     results.append(result)
                     self.completed.append(result)
@@ -260,6 +266,7 @@ class PriorityQueue:
                     confidence="medium",
                     priority=item.priority,
                     early_notified=True,
+                    rationale=getattr(item, "rationale", "") or "",
                 ))
 
             return _on_lead
