@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections import deque
 from typing import Protocol
 
 import numpy as np
@@ -103,6 +104,17 @@ def _format_ts(seconds: float) -> str:
 # prompt token budget and a bad chunk cannot poison many later chunks.
 _COHERENCE_TAIL_WORDS = 24
 
+# Cross-speaker echo suppression (Phase 2 / C3 Tier 1). A near-duplicate line
+# from the OTHER capture within this window is treated as speaker bleed (mic
+# picking up loopback output, or vice-versa) and dropped.
+_ECHO_WINDOW_SECONDS = 2.0
+_ECHO_SIMILARITY = 0.85
+_RECENT_LINES_MAXLEN = 24
+# Below this length, utterances ("Yes.", "Okay", "Right") are too common and
+# too short for reliable similarity, so they are never treated as echoes — both
+# sides genuinely saying "yes" must survive.
+_ECHO_MIN_CHARS = 12
+
 
 def _combine_prompt(vocab_prompt: str | None, prev_tail: str) -> str | None:
     """Combine the domain-vocabulary prior (5b) with the previous chunk's tail (5e).
@@ -162,6 +174,12 @@ class WhisperRecogniser:
         model_size: str | None = None,
         compute_type: str | None = None,
         device: str | None = None,
+        *,
+        vad_min_silence_ms: int = 500,
+        no_speech_threshold: float = 0.6,
+        log_prob_threshold: float = -1.0,
+        compression_ratio_threshold: float = 2.4,
+        echo_suppression: bool = True,
     ):
         model_size = (
             model_size
@@ -208,6 +226,15 @@ class WhisperRecogniser:
         # speaker so dual capture ("(me)"/"(remote)") keeps each side's
         # cross-chunk continuity independent.
         self._prev_tail: dict[str, str] = {}
+        # Decode-threshold tuning (Phase 2 / C2) passed to faster-whisper to
+        # cut hallucinations and edge clipping.
+        self._vad_min_silence_ms = vad_min_silence_ms
+        self._no_speech_threshold = no_speech_threshold
+        self._log_prob_threshold = log_prob_threshold
+        self._compression_ratio_threshold = compression_ratio_threshold
+        # Cross-speaker echo suppression (Phase 2 / C3 Tier 1).
+        self._echo_suppression = echo_suppression
+        self._recent_lines: deque = deque(maxlen=_RECENT_LINES_MAXLEN)
         logger.info("Whisper model loaded (%s, device=%s).", model_size, device)
 
     async def transcribe_chunk(
@@ -279,6 +306,14 @@ class WhisperRecogniser:
             beam_size=5,
             language="en",
             vad_filter=True,
+            vad_parameters=dict(
+                min_silence_duration_ms=getattr(self, "_vad_min_silence_ms", 500)
+            ),
+            no_speech_threshold=getattr(self, "_no_speech_threshold", 0.6),
+            log_prob_threshold=getattr(self, "_log_prob_threshold", -1.0),
+            compression_ratio_threshold=getattr(
+                self, "_compression_ratio_threshold", 2.4
+            ),
             initial_prompt=effective_prompt,
         )
 
@@ -308,14 +343,26 @@ class WhisperRecogniser:
                 self._last_text[speaker] = text
                 self._repeat_count[speaker] = 0
 
+            seg_offset = chunk_start_offset + seg.start
+            # Cross-speaker echo guard (C3 Tier 1): drop the same utterance when
+            # it bleeds into the other capture. No-op for single-source capture.
+            if getattr(self, "_echo_suppression", True) and self._is_echo(
+                seg_offset, speaker, text
+            ):
+                logger.debug("Dropping cross-speaker echo: %s", text)
+                continue
+
             lines.append(
                 TranscriptLine(
-                    start=_format_ts(chunk_start_offset + seg.start),
+                    start=_format_ts(seg_offset),
                     end=_format_ts(chunk_start_offset + seg.end),
                     speaker=speaker,
                     text=text,
                 )
             )
+            recent = getattr(self, "_recent_lines", None)
+            if recent is not None:
+                recent.append((seg_offset, speaker, text))
 
         # 5e: remember this chunk's trailing words as the coherence prompt for
         # this speaker's next chunk. Only update when the chunk produced text so
@@ -326,6 +373,28 @@ class WhisperRecogniser:
             )
 
         return lines
+
+    def _is_echo(self, offset: float, speaker: str, text: str) -> bool:
+        """True if a recent line from a DIFFERENT speaker near-duplicates this.
+
+        Guards dual (mic + loopback) capture against speaker bleed: the same
+        utterance picked up by both devices would otherwise appear twice under
+        different speaker tags. Same-speaker repeats are handled separately by
+        the repetition guard.
+        """
+        from sidekick.dedup import similarity
+
+        recent = getattr(self, "_recent_lines", None)
+        if not recent or len(text) < _ECHO_MIN_CHARS:
+            return False
+        for rec_off, rec_speaker, rec_text in recent:
+            if rec_speaker == speaker:
+                continue
+            if abs(offset - rec_off) > _ECHO_WINDOW_SECONDS:
+                continue
+            if similarity(text, rec_text) >= _ECHO_SIMILARITY:
+                return True
+        return False
 
     def close(self) -> None:
         self.model = None
@@ -364,10 +433,22 @@ def create_recogniser(speech_config=None) -> SpeechRecogniser:
     model = None
     compute = None
     device = None
+    decode_kwargs: dict = {}
     if speech_config is not None:
         model = getattr(speech_config, "model", None)
         compute = getattr(speech_config, "compute_type", None)
         device = getattr(speech_config, "device", None)
+        decode_kwargs = dict(
+            vad_min_silence_ms=getattr(speech_config, "vad_min_silence_ms", 500),
+            no_speech_threshold=getattr(speech_config, "no_speech_threshold", 0.6),
+            log_prob_threshold=getattr(speech_config, "log_prob_threshold", -1.0),
+            compression_ratio_threshold=getattr(
+                speech_config, "compression_ratio_threshold", 2.4
+            ),
+            echo_suppression=getattr(speech_config, "echo_suppression", True),
+        )
 
     logger.info("Using local Whisper backend (on-device, no network).")
-    return WhisperRecogniser(model_size=model, compute_type=compute, device=device)
+    return WhisperRecogniser(
+        model_size=model, compute_type=compute, device=device, **decode_kwargs
+    )

@@ -140,3 +140,37 @@ class TestAccuracyPipelineConfig:
         monkeypatch.setenv("SIDEKICK_ACCURACY_MODE", "true")
         assert _parse_config({}).sensitivity.accuracy_mode is True
 
+
+class TestSpeechDecodeConfig:
+    """Phase 2 speech: chunking + VAD/decode thresholds + echo suppression."""
+
+    def test_defaults(self):
+        sp = _parse_config({}).speech
+        assert sp.chunk_seconds == 5.0
+        assert sp.vad_min_silence_ms == 500
+        assert sp.no_speech_threshold == 0.6
+        assert sp.log_prob_threshold == -1.0
+        assert sp.compression_ratio_threshold == 2.4
+        assert sp.echo_suppression is True
+
+    def test_overrides_parsed(self):
+        sp = _parse_config(
+            {
+                "speech": {
+                    "chunk_seconds": 8,
+                    "vad_min_silence_ms": 300,
+                    "no_speech_threshold": 0.5,
+                    "log_prob_threshold": -0.8,
+                    "compression_ratio_threshold": 2.0,
+                    "echo_suppression": False,
+                }
+            }
+        ).speech
+        assert sp.chunk_seconds == 8.0
+        assert sp.vad_min_silence_ms == 300
+        assert sp.no_speech_threshold == 0.5
+        assert sp.log_prob_threshold == -0.8
+        assert sp.compression_ratio_threshold == 2.0
+        assert sp.echo_suppression is False
+
+

@@ -311,13 +311,32 @@ async def _initialise_capture(state: SessionState) -> bool:
     capture_mic = bool(
         getattr(getattr(state.config, "speech", None), "capture_microphone", False)
     )
+    # Chunk length (Phase 2 / C2): longer chunks give Whisper more context and
+    # fewer mid-utterance boundary cuts. Configurable via speech.chunk_seconds.
+    chunk_seconds = float(
+        getattr(getattr(state.config, "speech", None), "chunk_seconds", 5.0)
+    )
     if capture_mic:
         captures = [
-            AudioCapture(capture_mode="loopback", speaker_label="(remote)"),
-            AudioCapture(capture_mode="input", speaker_label="(me)"),
+            AudioCapture(
+                capture_mode="loopback",
+                speaker_label="(remote)",
+                chunk_duration=chunk_seconds,
+            ),
+            AudioCapture(
+                capture_mode="input",
+                speaker_label="(me)",
+                chunk_duration=chunk_seconds,
+            ),
         ]
     else:
-        captures = [AudioCapture(capture_mode="loopback", speaker_label="(audio)")]
+        captures = [
+            AudioCapture(
+                capture_mode="loopback",
+                speaker_label="(audio)",
+                chunk_duration=chunk_seconds,
+            )
+        ]
 
     # 5c pre-roll: create and BEGIN audio capture *before* loading the (slow)
     # Whisper model, so the WASAPI stream buffers the opening of the meeting

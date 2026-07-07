@@ -50,6 +50,12 @@ acme:
   # your microphone (default: system audio only, tagged "(audio)").
   # speech:
   #   capture_microphone: true
+  #   chunk_seconds: 5              # longer (e.g. 8) = more context, fewer cuts, more latency
+  #   vad_min_silence_ms: 500      # Silero VAD silence gap before splitting
+  #   no_speech_threshold: 0.6     # drop segments Whisper thinks are non-speech
+  #   log_prob_threshold: -1.0     # drop low-confidence decodes
+  #   compression_ratio_threshold: 2.4  # drop repetitive/hallucinated decodes
+  #   echo_suppression: true       # de-dup speaker bleed across mic + loopback
 
   # Uncomment to state the engagement objectives the relevance adjudicator
   # scores questions against. If omitted, set them live at call start with an

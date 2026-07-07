@@ -161,6 +161,19 @@ class SpeechConfig:
     # True it additionally captures the local microphone, tagging remote audio
     # "(remote)" and the local mic "(me)" so the analyst can attribute speech.
     capture_microphone: bool = False
+    # Structural transcript quality (Phase 2 / C2). Longer chunks give Whisper
+    # more context and fewer mid-utterance boundary cuts; the VAD / decode
+    # thresholds are passed through to faster-whisper to cut hallucinations and
+    # clipping. Defaults preserve current behaviour.
+    chunk_seconds: float = 5.0
+    vad_min_silence_ms: int = 500
+    no_speech_threshold: float = 0.6
+    log_prob_threshold: float = -1.0
+    compression_ratio_threshold: float = 2.4
+    # Cross-speaker echo suppression (Phase 2 / C3 Tier 1). Drops a near-
+    # duplicate line from the other capture within a short window (speaker
+    # bleed between mic and loopback). No-op unless capture_microphone is on.
+    echo_suppression: bool = True
 
 
 # Canonical default model fallback chains, shared with llm._TIER_CONFIG.
@@ -540,6 +553,14 @@ def _parse_config(raw: dict) -> SidekickConfig:
                     speech_raw.get("capture_microphone", False),
                 )
             ),
+            chunk_seconds=float(speech_raw.get("chunk_seconds", 5.0)),
+            vad_min_silence_ms=int(speech_raw.get("vad_min_silence_ms", 500)),
+            no_speech_threshold=float(speech_raw.get("no_speech_threshold", 0.6)),
+            log_prob_threshold=float(speech_raw.get("log_prob_threshold", -1.0)),
+            compression_ratio_threshold=float(
+                speech_raw.get("compression_ratio_threshold", 2.4)
+            ),
+            echo_suppression=_as_bool(speech_raw.get("echo_suppression", True)),
         ),
         models=ModelsConfig(
             fast=models_raw.get("fast") or list(_DEFAULT_MODEL_CHAINS["fast"]),

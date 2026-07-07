@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Iterable
 
 import numpy as np
@@ -81,7 +83,7 @@ def _install_fake_whisper(monkeypatch, segments):
     """Patch the WhisperRecogniser constructor to use the fake model."""
     fake = _FakeWhisperModel(segments)
 
-    def _fake_init(self, model_size=None, compute_type=None, device=None):
+    def _fake_init(self, model_size=None, compute_type=None, device=None, **kwargs):
         self.model = fake
         self.model_size = model_size or "small.en"
         self.compute_type = compute_type or "int8"
@@ -89,6 +91,14 @@ def _install_fake_whisper(monkeypatch, segments):
         self._last_text = {}
         self._repeat_count = {}
         self._prev_tail = {}
+        self._vad_min_silence_ms = kwargs.get("vad_min_silence_ms", 500)
+        self._no_speech_threshold = kwargs.get("no_speech_threshold", 0.6)
+        self._log_prob_threshold = kwargs.get("log_prob_threshold", -1.0)
+        self._compression_ratio_threshold = kwargs.get(
+            "compression_ratio_threshold", 2.4
+        )
+        self._echo_suppression = kwargs.get("echo_suppression", True)
+        self._recent_lines = deque(maxlen=24)
 
     monkeypatch.setattr(sr.WhisperRecogniser, "__init__", _fake_init)
     return fake
@@ -467,6 +477,133 @@ class TestSpeechRecogniserProtocol:
         assert hasattr(rec, "close")
         rec.close()
         assert rec.model is None
+
+class TestDecodeThresholds:
+    """Phase 2 / C2: tuned VAD + decode thresholds reach faster-whisper."""
+
+    def test_default_thresholds_passed_to_transcribe(self, monkeypatch):
+        fake = _install_fake_whisper(monkeypatch, [_Seg(0.0, 1.0, "hello")])
+        rec = sr.WhisperRecogniser()
+        asyncio.run(rec.transcribe_chunk(np.zeros(16_000, dtype=np.float32)))
+        call = fake.calls[0]
+        assert call["vad_filter"] is True
+        assert call["vad_parameters"] == {"min_silence_duration_ms": 500}
+        assert call["no_speech_threshold"] == 0.6
+        assert call["log_prob_threshold"] == -1.0
+        assert call["compression_ratio_threshold"] == 2.4
+
+    def test_config_values_flow_through_factory(self, monkeypatch):
+        _install_fake_whisper(monkeypatch, [])
+        cfg = SimpleNamespace(
+            backend="whisper",
+            model="small.en",
+            compute_type="int8",
+            device="cpu",
+            vad_min_silence_ms=300,
+            no_speech_threshold=0.5,
+            log_prob_threshold=-0.8,
+            compression_ratio_threshold=2.0,
+            echo_suppression=False,
+        )
+        rec = sr.create_recogniser(cfg)
+        assert rec._vad_min_silence_ms == 300
+        assert rec._no_speech_threshold == 0.5
+        assert rec._log_prob_threshold == -0.8
+        assert rec._compression_ratio_threshold == 2.0
+        assert rec._echo_suppression is False
+
+
+class TestEchoSuppression:
+    """Phase 2 / C3 Tier 1: cross-speaker speaker-bleed is de-duplicated."""
+
+    def _audio(self):
+        return np.zeros(16_000, dtype=np.float32)
+
+    def test_cross_speaker_duplicate_dropped(self, monkeypatch):
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+        # (remote) speaks at offset 10.0
+        fake._segments = [_Seg(0.0, 1.0, "the egress cost is high")]
+        asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        # (me) mic picks up the same speaker output ~0.5s later → echo, dropped
+        fake._segments = [_Seg(0.5, 1.5, "the egress cost is high")]
+        me_lines = asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(me)")
+        )
+        assert me_lines == []
+
+    def test_outside_window_kept(self, monkeypatch):
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+        fake._segments = [_Seg(0.0, 1.0, "same words here")]
+        asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        # 3s later — beyond the 2s echo window → not an echo
+        fake._segments = [_Seg(0.0, 1.0, "same words here")]
+        me_lines = asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=13.0, speaker="(me)")
+        )
+        assert [ln.text for ln in me_lines] == ["same words here"]
+
+    def test_low_similarity_kept(self, monkeypatch):
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+        fake._segments = [_Seg(0.0, 1.0, "the egress cost is high")]
+        asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        fake._segments = [_Seg(0.2, 1.2, "what about capacity sizing")]
+        me_lines = asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(me)")
+        )
+        assert [ln.text for ln in me_lines] == ["what about capacity sizing"]
+
+    def test_same_speaker_not_treated_as_echo(self, monkeypatch):
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+        fake._segments = [_Seg(0.0, 1.0, "repeat me")]
+        asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        # Same speaker repeats within the window — echo guard must NOT drop it
+        # (the repetition guard allows up to 3 before dropping).
+        fake._segments = [_Seg(0.3, 1.3, "repeat me")]
+        again = asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        assert [ln.text for ln in again] == ["repeat me"]
+
+    def test_disabled_keeps_cross_speaker_duplicate(self, monkeypatch):
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+        rec._echo_suppression = False
+        fake._segments = [_Seg(0.0, 1.0, "the egress cost is high")]
+        asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        fake._segments = [_Seg(0.5, 1.5, "the egress cost is high")]
+        me_lines = asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(me)")
+        )
+        assert [ln.text for ln in me_lines] == ["the egress cost is high"]
+
+    def test_short_utterance_not_echo_suppressed(self, monkeypatch):
+        # Both sides genuinely saying "Yes." must survive — short, common words
+        # are below the echo min-length and are never treated as echoes.
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+        fake._segments = [_Seg(0.0, 1.0, "Yes.")]
+        asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(remote)")
+        )
+        fake._segments = [_Seg(0.3, 1.3, "Yes.")]
+        me_lines = asyncio.run(
+            rec.transcribe_chunk(self._audio(), chunk_start_offset=10.0, speaker="(me)")
+        )
+        assert [ln.text for ln in me_lines] == ["Yes."]
 
 
 if __name__ == "__main__":

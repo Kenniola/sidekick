@@ -8,6 +8,24 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Added
 
+- **Phase 2 (accuracy spec) — structural transcript quality + speaker
+  correctness.** Improves the raw transcript the classifier reads, and makes
+  dual-capture speaker attribution robust. Defaults preserve current behaviour.
+  - **Decode-threshold tuning (C2).** `vad_parameters` (min-silence),
+    `no_speech_threshold`, `log_prob_threshold`, and
+    `compression_ratio_threshold` are now passed to faster-whisper to cut
+    hallucinations and edge clipping — all configurable under `speech:`.
+    (`tests/test_speech_recogniser.py`)
+  - **Configurable chunk length (C2).** `speech.chunk_seconds` (default 5) —
+    longer chunks give Whisper more context and fewer mid-utterance boundary
+    cuts, wired into the audio capture. (`tests/test_config_merge.py`)
+  - **Cross-speaker echo suppression (C3 Tier 1).** When mic + loopback capture
+    both pick up the same utterance (speaker bleed), the duplicate under the
+    other speaker tag is dropped — within a 2 s window, similarity ≥ 0.85, and
+    only for utterances ≥ 12 chars so genuine short confirmations ("Yes.")
+    always survive. Off automatically for single-source capture; toggle via
+    `speech.echo_suppression`. (`tests/test_speech_recogniser.py`)
+
 - **Phase 1 (accuracy spec) — two-stage relevance pipeline.** A high-recall fast
   detector now feeds a periodic **deep-tier relevance adjudicator** that surfaces
   only the few questions genuinely worth the consultant's attention, each with a
