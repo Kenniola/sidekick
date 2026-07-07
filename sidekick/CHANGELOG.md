@@ -21,6 +21,8 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Changed
 
+- **`stop` no longer overflows the chat with the full deliverables pack.** A real post-call pack (LLM email + tables) runs to ~13&nbsp;KB, which the chat host spills to a tool-result overflow file the agent can't read — so the deliverables never rendered. `stop` now always persists the *full* pack to disk (new `save_deliverables(..., force=True)`, so it saves even when `output.auto_save` is off) and inlines only a bounded **digest**: a clipped email preview plus the short, deterministic action-item and follow-up sections, with a pointer to the saved file. The session summary and the whole `stop` response are hard-bounded (`_MAX_SUMMARY_CHARS` / `_MAX_STOP_RESPONSE_CHARS`) so the response always renders inline. New `DeliverablesPack` (`full_markdown()` / `inline_digest()`) and `build_deliverables()`; `generate_deliverables()` retained as a thin wrapper. (`tests/test_deliverables.py`)
+
 - **`install.ps1`** package source is no longer a `TODO` — it defaults to the private Git repo and honours a `SIDEKICK_REPO_URL` env override. The same URL is centralised in `server.py` as `_REPO_URL` / `_install_hint()` so the install hint and installer stay in sync.
 
 - **Phase 2 — `server.py` consolidation (behaviour-preserving refactor).** The ~1,140-line `server.py` was decomposed into focused, unit-tested modules. Each slice was committed separately with characterization tests written *before* the extraction (test-first), so the structural moves are verifiably regression-free. Test count grew from 48 → 109.

@@ -38,7 +38,7 @@ from sidekick.actions.research import ResearchPipeline
 from sidekick.actions.prototype import PrototypePipeline
 from sidekick.output.session_log import SessionLog
 from sidekick.output import notifier
-from sidekick.output.deliverables import generate_deliverables, save_deliverables
+from sidekick.output.deliverables import build_deliverables, save_deliverables
 from sidekick import grounding
 from sidekick import engine
 from sidekick.prompt_budget import clip
@@ -70,6 +70,12 @@ server = FastMCP("sidekick")
 _state = SessionState()
 
 _GROUNDING_CACHE_TTL = 300.0  # 5 minutes
+
+# Bounds for the ``stop`` response so it always renders inline and never spills
+# to an unreadable overflow file. The full deliverables pack is saved to disk;
+# the chat response carries only a bounded summary + digest.
+_MAX_SUMMARY_CHARS = 4000
+_MAX_STOP_RESPONSE_CHARS = 8000
 
 
 # ---------------------------------------------------------------------------
@@ -741,7 +747,7 @@ async def stop(deliverables: bool = True) -> str:
 
     summary = "No active session."
     saved_files: list[str] = []
-    deliverables_block = ""
+    deliverables_digest = ""
     deliverables_path = ""
     if _state.session_log and _state.context:
         summary = _state.session_log.generate_summary(_state.context)
@@ -760,10 +766,17 @@ async def stop(deliverables: bool = True) -> str:
         # research batch). Wrapped so a failure never breaks the summary.
         if deliverables and _state.config:
             try:
-                deliverables_block = await generate_deliverables(
+                pack = await build_deliverables(
                     _state.session_log, _state.context, _state.config
                 )
-                dp = save_deliverables(deliverables_block, _state.config)
+                # Always persist the FULL pack on an explicit stop (force) so
+                # there is a readable file to open even when auto_save is off.
+                # The chat response inlines only a bounded digest — the full
+                # email can run to several KB, which overflows the tool-result
+                # buffer and spills to a file the agent cannot read.
+                dp = save_deliverables(
+                    pack.full_markdown(), _state.config, force=True
+                )
                 if dp:
                     deliverables_path = str(dp)
                     saved_files.append(deliverables_path)
@@ -775,9 +788,10 @@ async def stop(deliverables: bool = True) -> str:
                         else "chime"
                     )
                     notifier.write_deliverables_alert(deliverables_path, sound=sound)
+                deliverables_digest = pack.inline_digest(deliverables_path)
             except Exception:
                 logger.exception("Deliverables generation failed")
-                deliverables_block = ""
+                deliverables_digest = ""
 
     # Lead with a prominent banner so the deliverables file is never lost even
     # if the chat surface truncates the (long) inline content below.
@@ -786,16 +800,21 @@ async def stop(deliverables: bool = True) -> str:
         banner = (
             f"\U0001f4e6 **Post-call deliverables saved:** `{deliverables_path}`\n"
             f"(Draft follow-up email + action-item table + follow-up research "
-            f"batch \u2014 full content below.)\n\n---\n\n"
+            f"batch \u2014 open that file for the full pack; a preview is below.)"
+            f"\n\n---\n\n"
         )
+
+    # Bound the session summary so a long transcript/thread list can't push the
+    # whole stop response past the chat inline limit.
+    summary = clip(summary, _MAX_SUMMARY_CHARS, keep="head")
 
     if saved_files:
         summary += "\n\n**Saved files:**\n" + "\n".join(
             f"- {f}" for f in saved_files
         )
 
-    if deliverables_block:
-        summary += "\n\n" + deliverables_block
+    if deliverables_digest:
+        summary += "\n\n" + deliverables_digest
 
     # Reset state
     _state.listen_task = None
@@ -803,7 +822,13 @@ async def stop(deliverables: bool = True) -> str:
     _state.recogniser = None
     _state.last_error = None
 
-    return _get_unseen_findings() + banner + summary
+    # Final belt-and-braces bound: the banner (with the saved path) sits at the
+    # front so it always survives even if the tail is clipped.
+    return clip(
+        _get_unseen_findings() + banner + summary,
+        _MAX_STOP_RESPONSE_CHARS,
+        keep="head",
+    )
 
 
 # ---------------------------------------------------------------------------

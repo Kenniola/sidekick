@@ -189,3 +189,77 @@ class TestSaveDeliverables:
         assert path.exists()
         assert path.read_text(encoding="utf-8") == "# hello"
         assert path.name.startswith("deliverables_")
+
+    def test_force_writes_even_when_auto_save_off(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(deliverables, "get_output_dir", lambda customer: tmp_path)
+        path = deliverables.save_deliverables(
+            "# forced", _cfg(auto_save=False), force=True
+        )
+        assert path is not None
+        assert path.exists()
+        assert path.read_text(encoding="utf-8") == "# forced"
+
+
+# --------------------------------------------------------------------------- #
+# Pack + inline digest (keeps the stop response small enough to render)
+# --------------------------------------------------------------------------- #
+
+class TestBuildDeliverables:
+    @pytest.mark.asyncio
+    async def test_returns_pack_with_sections(self):
+        ctx = _context(
+            action_items=[{"description": "Send doc"}],
+            open_questions=[{"question": "Egress cost?"}],
+        )
+        pack = await deliverables.build_deliverables(
+            _log(), ctx, _cfg("Globex"), llm_fn=_fake_llm
+        )
+        assert pack.customer == "Globex"
+        assert pack.email.startswith("Thanks for your time")
+        assert "Send doc" in pack.actions
+        assert "Egress cost?" in pack.follow_up
+
+    @pytest.mark.asyncio
+    async def test_full_markdown_matches_generate_deliverables(self):
+        ctx = _context(action_items=[{"description": "Send doc"}])
+        pack = await deliverables.build_deliverables(
+            _log(), ctx, _cfg("Globex"), llm_fn=_fake_llm
+        )
+        legacy = await deliverables.generate_deliverables(
+            _log(), ctx, _cfg("Globex"), llm_fn=_fake_llm
+        )
+        assert pack.full_markdown() == legacy
+
+
+class TestInlineDigest:
+    def _pack(self, email="Short email body."):
+        return deliverables.DeliverablesPack(
+            customer="Globex",
+            email=email,
+            actions="| 1 | Send doc | \u2014 | \u2014 |",
+            follow_up="- [ ] Egress cost?",
+        )
+
+    def test_short_email_not_truncated(self):
+        digest = self._pack().inline_digest("C:/out/deliverables_x.md")
+        assert "## Draft Follow-up Email (preview)" in digest
+        assert "Short email body." in digest
+        assert "truncated" not in digest.lower()
+        assert "Send doc" in digest
+        assert "Egress cost?" in digest
+
+    def test_long_email_truncated_with_pointer(self):
+        long_email = "word " * 400  # ~2000 chars, over the preview budget
+        digest = self._pack(email=long_email).inline_digest(
+            "C:/out/deliverables_x.md"
+        )
+        assert "truncated" in digest.lower()
+        assert "deliverables_x.md" in digest
+        # Digest stays far smaller than the full email.
+        assert len(digest) < len(long_email)
+
+    def test_digest_is_smaller_than_full_markdown(self):
+        long_email = "word " * 400
+        pack = self._pack(email=long_email)
+        assert len(pack.inline_digest("p.md")) < len(pack.full_markdown())
+

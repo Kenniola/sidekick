@@ -15,6 +15,7 @@ degrades gracefully — ``generate_deliverables`` always returns a string so the
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -26,6 +27,12 @@ from sidekick.prompt_budget import clip
 logger = logging.getLogger(__name__)
 
 LLMFn = Callable[..., Awaitable[str]]
+
+# How much of the (LLM-drafted, variable-length) email to inline in the chat
+# ``stop`` response. The full email always lives in the saved file; the inline
+# copy is a preview so the whole ``stop`` response stays well under the chat
+# tool-result buffer and never spills to an unreadable overflow file.
+_EMAIL_PREVIEW_CHARS = 700
 
 _EMAIL_SYSTEM_PROMPT = (
     "You are a senior consultant drafting a concise, professional follow-up "
@@ -152,6 +159,106 @@ async def _draft_email(session_log, context, config, llm_fn: LLMFn) -> str:
         )
 
 
+@dataclass
+class DeliverablesPack:
+    """The three deliverables sections, kept separate so the caller can render
+    the full pack (saved to disk) or a compact digest (inlined in chat).
+    """
+
+    customer: str
+    email: str
+    actions: str
+    follow_up: str
+
+    def full_markdown(self) -> str:
+        """The complete deliverables pack — written to the saved ``.md`` file."""
+        return "\n".join(
+            [
+                f"# Post-Call Deliverables \u2014 {self.customer}",
+                "",
+                "## Draft Follow-up Email",
+                "",
+                self.email,
+                "",
+                "## Action Items",
+                "",
+                self.actions,
+                "",
+                "## Follow-up Research Batch",
+                "",
+                self.follow_up,
+                "",
+            ]
+        )
+
+    def inline_digest(
+        self,
+        saved_path: str | None = None,
+        *,
+        email_preview_chars: int = _EMAIL_PREVIEW_CHARS,
+    ) -> str:
+        """A compact, size-bounded version for the chat ``stop`` response.
+
+        Inlining the full pack (a real email runs to several KB) overflows the
+        chat tool-result buffer, which spills it to a file the agent can't read
+        — so the deliverables never render. This keeps the short, immediately
+        actionable sections (action items + follow-up batch) verbatim and shows
+        only a preview of the long email, pointing at the saved file for the
+        rest.
+        """
+        email_preview = clip(self.email, email_preview_chars, keep="head")
+        truncated = len(email_preview) < len(self.email)
+        if truncated:
+            pointer = (
+                f"_\u2026email truncated \u2014 full draft in `{saved_path}`._"
+                if saved_path
+                else "_\u2026email truncated \u2014 see the saved deliverables file._"
+            )
+        else:
+            pointer = ""
+
+        parts = [
+            f"# Post-Call Deliverables \u2014 {self.customer}",
+            "",
+            "## Draft Follow-up Email (preview)",
+            "",
+            email_preview,
+        ]
+        if pointer:
+            parts += ["", pointer]
+        parts += [
+            "",
+            "## Action Items",
+            "",
+            self.actions,
+            "",
+            "## Follow-up Research Batch",
+            "",
+            self.follow_up,
+            "",
+        ]
+        return "\n".join(parts)
+
+
+async def build_deliverables(
+    session_log,
+    context,
+    config,
+    *,
+    llm_fn: LLMFn = call_llm,
+) -> DeliverablesPack:
+    """Assemble the deliverables sections for a finished session.
+
+    Returns a :class:`DeliverablesPack` so the caller can persist the full
+    markdown and inline only a compact digest.
+    """
+    customer = getattr(config, "customer", "the customer")
+    email = await _draft_email(session_log, context, config, llm_fn)
+    actions = _action_item_table(context)
+    follow_up = _unanswered_research_batch(session_log, context)
+    return DeliverablesPack(customer, email, actions, follow_up)
+
+
 async def generate_deliverables(
     session_log,
     context,
@@ -160,34 +267,20 @@ async def generate_deliverables(
     llm_fn: LLMFn = call_llm,
 ) -> str:
     """Produce the full markdown deliverables block for a finished session."""
-    customer = getattr(config, "customer", "the customer")
-    email = await _draft_email(session_log, context, config, llm_fn)
-    actions = _action_item_table(context)
-    follow_up = _unanswered_research_batch(session_log, context)
-
-    return "\n".join(
-        [
-            f"# Post-Call Deliverables \u2014 {customer}",
-            "",
-            "## Draft Follow-up Email",
-            "",
-            email,
-            "",
-            "## Action Items",
-            "",
-            actions,
-            "",
-            "## Follow-up Research Batch",
-            "",
-            follow_up,
-            "",
-        ]
-    )
+    pack = await build_deliverables(session_log, context, config, llm_fn=llm_fn)
+    return pack.full_markdown()
 
 
-def save_deliverables(content: str, config: SidekickConfig) -> Path | None:
-    """Write the deliverables markdown to the customer output directory."""
-    if not getattr(config.output, "auto_save", False):
+def save_deliverables(
+    content: str, config: SidekickConfig, *, force: bool = False
+) -> Path | None:
+    """Write the deliverables markdown to the customer output directory.
+
+    ``force=True`` persists even when ``output.auto_save`` is off — used on an
+    explicit ``stop`` so there is always a file to open, since the inline chat
+    copy is only a preview.
+    """
+    if not force and not getattr(config.output, "auto_save", False):
         return None
     output_dir = get_output_dir(config.customer)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
