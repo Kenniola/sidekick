@@ -86,8 +86,8 @@ def _install_fake_whisper(monkeypatch, segments):
         self.model_size = model_size or "small.en"
         self.compute_type = compute_type or "int8"
         self.device = device or "cpu"
-        self._last_text = ""
-        self._repeat_count = 0
+        self._last_text = {}
+        self._repeat_count = {}
         self._prev_tail = {}
 
     monkeypatch.setattr(sr.WhisperRecogniser, "__init__", _fake_init)
@@ -275,6 +275,37 @@ class TestTranscribeChunk:
         # dropped (repeat_count reaches the >=3 threshold on the 4th).
         assert len(lines) == 3
         assert all(ln.text == "Thank you." for ln in lines)
+
+    def test_repetition_guard_is_per_speaker(self, monkeypatch):
+        """C2.3: one speaker's repeats must not suppress another speaker's
+        identical short utterance.
+
+        Regression for the shared ``_last_text``/``_repeat_count`` state: with a
+        single shared counter, three "Yes." from ``(me)`` would push the count
+        to the drop threshold, so the *remote* speaker's first "Yes." was
+        silently dropped. Keyed by speaker, each side is tracked independently.
+        """
+        fake = _install_fake_whisper(monkeypatch, [])
+        rec = sr.WhisperRecogniser()
+
+        # (me) says "Yes." enough times to trip its own guard.
+        fake._segments = [_Seg(float(i), i + 1.0, "Yes.") for i in range(4)]
+        me_lines = asyncio.run(
+            rec.transcribe_chunk(
+                np.zeros(16_000, dtype=np.float32), speaker="(me)"
+            )
+        )
+        assert len(me_lines) == 3  # 4th dropped for (me)
+
+        # (remote) says "Yes." once — must NOT be suppressed by (me)'s state.
+        fake._segments = [_Seg(0.0, 1.0, "Yes.")]
+        remote_lines = asyncio.run(
+            rec.transcribe_chunk(
+                np.zeros(16_000, dtype=np.float32), speaker="(remote)"
+            )
+        )
+        assert [ln.text for ln in remote_lines] == ["Yes."]
+        assert all(ln.speaker == "(remote)" for ln in remote_lines)
 
     def test_empty_text_segments_skipped(self, monkeypatch):
         _install_fake_whisper(

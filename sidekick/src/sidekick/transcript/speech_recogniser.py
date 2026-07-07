@@ -198,8 +198,12 @@ class WhisperRecogniser:
         self.model_size = model_size
         self.compute_type = compute_type
         self.device = device
-        self._last_text: str = ""
-        self._repeat_count: int = 0
+        # Repetition hallucination guard, keyed by speaker (C2.3). Keying by
+        # speaker stops one speaker's repeated short utterance from suppressing
+        # a different speaker's identical one (e.g. both sides saying "Yes.").
+        # Serial transcription means these are never mutated concurrently.
+        self._last_text: dict[str, str] = {}
+        self._repeat_count: dict[str, int] = {}
         # Per-speaker trailing text from the previous chunk (5e). Keyed by
         # speaker so dual capture ("(me)"/"(remote)") keeps each side's
         # cross-chunk continuity independent.
@@ -293,15 +297,16 @@ class WhisperRecogniser:
                 )
                 continue
 
-            # Repetition filter — Whisper hallucination guard
-            if text == self._last_text:
-                self._repeat_count += 1
-                if self._repeat_count >= 3:
+            # Repetition filter — Whisper hallucination guard (per-speaker, C2.3)
+            if text == self._last_text.get(speaker, ""):
+                count = self._repeat_count.get(speaker, 0) + 1
+                self._repeat_count[speaker] = count
+                if count >= 3:
                     logger.debug("Dropping repeated hallucination: %s", text)
                     continue
             else:
-                self._last_text = text
-                self._repeat_count = 0
+                self._last_text[speaker] = text
+                self._repeat_count[speaker] = 0
 
             lines.append(
                 TranscriptLine(

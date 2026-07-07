@@ -22,6 +22,52 @@ def _get_user_dir() -> Path:
     return Path(os.environ.get("SIDEKICK_HOME", Path.home() / ".sidekick"))
 
 
+_KNOWN_STT_MODELS = {
+    "tiny.en", "base.en", "small.en", "medium.en",
+    "distil-large-v2", "distil-large-v3", "large-v3", "turbo", "large-v3-turbo",
+}
+
+
+def _set_env_stt_model(env_file: Path, model: str) -> None:
+    """Ensure a single active ``SIDEKICK_WHISPER_MODEL=<model>`` line in the .env.
+
+    Replaces any existing active *or commented* model line and de-duplicates,
+    so repeated ``--stt-model`` runs stay idempotent.
+    """
+    key = "SIDEKICK_WHISPER_MODEL"
+    new_line = f"{key}={model}"
+    lines = (
+        env_file.read_text(encoding="utf-8").splitlines()
+        if env_file.exists()
+        else []
+    )
+    out: list[str] = []
+    replaced = False
+    for ln in lines:
+        stripped = ln.lstrip("# ").strip()
+        if stripped.startswith(key + "="):
+            if not replaced:
+                out.append(new_line)
+                replaced = True
+            # else: drop duplicate/commented variants
+        else:
+            out.append(ln)
+    if not replaced:
+        out.append(new_line)
+    env_file.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def _apply_stt_model(env_file: Path, model: str) -> None:
+    """Validate and persist the chosen Whisper model into ~/.sidekick/.env."""
+    if model not in _KNOWN_STT_MODELS:
+        print(
+            f"\u26a0\ufe0f  '{model}' is not a recognised Whisper model - setting it anyway."
+        )
+    _set_env_stt_model(env_file, model)
+    print(f"\u2713 Set Whisper model to '{model}' in {env_file}")
+    print("   (run `sidekick benchmark-stt` to confirm it runs in real time)")
+
+
 def _get_vscode_user_settings_path() -> Path | None:
     """Find the VS Code User settings directory (cross-platform)."""
     import platform
@@ -81,11 +127,14 @@ def _cmd_init():
             "# GitHub token (only needed if `gh auth token` is unavailable)\n"
             "# GITHUB_TOKEN=ghp_xxx\n"
             "\n"
-            "# Whisper model override (optional)\n"
+            "# Whisper model override (optional). Run `sidekick benchmark-stt`\n"
+            "# to measure which model your machine can run in real time, then\n"
+            "# `sidekick init --stt-model <model>` to persist the choice here.\n"
             "# Default is small.en (~470MB, ~5-7% WER). Other choices:\n"
-            "#   base.en   ~150MB  fastest, ~8-10% WER\n"
-            "#   medium.en ~1.5GB  best English accuracy\n"
-            "#   large-v3  ~3.1GB  multilingual\n"
+            "#   base.en          ~150MB  fastest, ~8-10% WER\n"
+            "#   medium.en        ~1.5GB  better English accuracy\n"
+            "#   distil-large-v3  ~1.5GB  RECOMMENDED - near large-v3 accuracy, low hallucination\n"
+            "#   large-v3         ~3.1GB  best, GPU recommended\n"
             "# SIDEKICK_WHISPER_MODEL=small.en\n"
             "# SIDEKICK_WHISPER_COMPUTE=int8\n"
             "\n"
@@ -102,6 +151,11 @@ def _cmd_init():
         print(f"\u2713 Created {env_file}")
     else:
         print(f"\u2713 {env_file} already exists (kept)")
+
+    # 2c. Optional STT model selection: `sidekick init --stt-model <model>`
+    stt_model = _arg_value("--stt-model")
+    if stt_model:
+        _apply_stt_model(env_file, stt_model)
 
     # 3. Check for GitHub token
     gh_token = _check_github_token()
@@ -365,6 +419,96 @@ def _cmd_models():
     print('  $env:SIDEKICK_MODEL_DEEP = "copilot:claude-opus-4.8,copilot:gpt-4.1"')
 
 
+def _arg_value(flag: str) -> str | None:
+    """Return the value following ``flag`` in argv, or None if absent.
+
+    Supports ``--flag value`` and ``--flag=value``.
+    """
+    for i, a in enumerate(sys.argv):
+        if a == flag:
+            return sys.argv[i + 1] if i + 1 < len(sys.argv) else None
+        if a.startswith(flag + "="):
+            return a.split("=", 1)[1]
+    return None
+
+
+def _cmd_benchmark_stt():
+    """Benchmark Whisper models' real-time factor (RTF) on this machine.
+
+    Usage:
+      sidekick benchmark-stt [--audio PATH] [--seconds N]
+                             [--models a,b,c] [--threshold F]
+
+    With no ``--audio`` it records ~N seconds of system audio (loopback) — play
+    a meeting recording or talk while it captures. Prints an RTF table and
+    recommends the most accurate model that stays under the threshold.
+    """
+    from sidekick.transcript import benchmark as bm
+
+    audio_path = _arg_value("--audio")
+    seconds = int(_arg_value("--seconds") or 20)
+    threshold = float(_arg_value("--threshold") or bm.DEFAULT_RTF_THRESHOLD)
+    models_arg = _arg_value("--models")
+    candidates = (
+        [m.strip() for m in models_arg.split(",") if m.strip()]
+        if models_arg
+        else bm.CANDIDATE_MODELS
+    )
+
+    if audio_path:
+        try:
+            audio, duration = bm.load_audio(audio_path)
+        except Exception as e:  # noqa: BLE001 — surface a clear CLI error
+            print(f"Could not load audio {audio_path}: {type(e).__name__}: {e}")
+            sys.exit(1)
+    else:
+        print(f"No --audio given; recording ~{seconds}s of system audio (loopback).")
+        print("Play a meeting recording or talk now...\n")
+        try:
+            audio, duration = bm.record_loopback(seconds)
+        except Exception as e:  # noqa: BLE001 — guide the user to --audio
+            print(f"Recording failed ({type(e).__name__}: {e}).")
+            print("Pass a file instead:  sidekick benchmark-stt --audio PATH.wav")
+            sys.exit(1)
+
+    if duration < 1.0:
+        print(f"Audio too short ({duration:.1f}s) — need ~1s+ of speech.")
+        sys.exit(1)
+
+    print(f"Benchmarking {len(candidates)} model(s) on {duration:.1f}s of audio...")
+    print("(first run downloads weights — subsequent runs are cached)\n")
+    results = bm.run_benchmark(audio, duration, candidates, bm.default_transcribe_fn)
+
+    print(f"{'model':<20}{'load s':>8}{'decode s':>10}{'RTF':>7}  status")
+    print("-" * 55)
+    for r in results:
+        if r.ok:
+            status = "ok" if r.rtf < threshold else "SLOW"
+            print(
+                f"{r.model:<20}{r.load_seconds:>8.1f}"
+                f"{r.transcribe_seconds:>10.1f}{r.rtf:>7.2f}  {status}"
+            )
+        else:
+            print(f"{r.model:<20}{'--':>8}{'--':>10}{'--':>7}  FAILED: {r.error}")
+
+    print("\nTranscript previews (eyeball accuracy):")
+    for r in results:
+        if r.ok and r.sample_text:
+            print(f"  [{r.model}] {r.sample_text}")
+
+    rec = bm.recommend_model(results, threshold)
+    print()
+    if rec:
+        print(f"Recommended (most accurate with RTF < {threshold}): {rec}")
+        print(f"Apply it:  sidekick init --stt-model {rec}")
+        print(f"       or:  set SIDEKICK_WHISPER_MODEL={rec}")
+    else:
+        print(
+            f"No model met RTF < {threshold} on this machine. Use the fastest "
+            "that works (small.en/base.en), or run on a CUDA GPU."
+        )
+
+
 def _running_inside_uv_tool() -> bool:
     """True when the current interpreter lives inside the uv tool environment.
 
@@ -574,6 +718,7 @@ def main():
         print("  sidekick serve         Run the MCP server (used by mcp.json)")
         print("  sidekick list-configs  Show available customer profiles")
         print("  sidekick models        Show resolved per-tier model chains")
+        print("  sidekick benchmark-stt Benchmark Whisper models' speed on this machine")
         print("  sidekick uninstall     Remove all sidekick artifacts")
         print("  sidekick help          Show this help message")
         return
@@ -587,6 +732,8 @@ def main():
         _cmd_list_configs()
     elif command == "models":
         _cmd_models()
+    elif command == "benchmark-stt":
+        _cmd_benchmark_stt()
     elif command == "uninstall":
         _cmd_uninstall()
     else:

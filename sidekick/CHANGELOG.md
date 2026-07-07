@@ -8,6 +8,23 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Added
 
+- **Phase 0 (accuracy spec) — STT model benchmark & selection.**
+  - **`sidekick benchmark-stt`** measures each candidate Whisper model's
+    real-time factor (RTF) on the actual machine — from a `--audio` file or a
+    short loopback recording — and recommends the most accurate model that
+    stays under the RTF threshold (default 0.7). Pure decision logic
+    (`real_time_factor`, `recommend_model`, `run_benchmark`) lives in
+    `transcript/benchmark.py` with the model/audio I/O injected, so it is
+    unit-tested offline. (`tests/test_benchmark_stt.py`)
+  - **`sidekick init --stt-model <model>`** persists the chosen model into
+    `~/.sidekick/.env` (idempotent; replaces any commented default). `.env`
+    guidance now highlights `distil-large-v3` (≈ large-v3 accuracy, 6.3× faster,
+    low hallucination) as the recommended target. (`tests/test_cli_stt.py`)
+  - **Per-speaker repetition guard (C2.3).** The Whisper hallucination
+    repetition filter (`_last_text`/`_repeat_count`) is now keyed by speaker, so
+    one speaker's repeated short utterance (e.g. "Yes.") can no longer suppress a
+    different speaker's identical line. (`tests/test_speech_recogniser.py`)
+
 - **Phase 5f — per-call tailoring levers.** Two config surfaces that sharpen accuracy for a specific engagement, both inert by default.
   - **`glossary:`** (list, on the customer profile) — engagement proper nouns (project / team / product names) seeded verbatim into the Whisper vocabulary prior at high weight via the new `Vocabulary.seed_terms()`, so they are recognised from the first chunk (before in-session adaptation has anything to learn from) and outrank derived seed terms. Unlike `seed()`, multi-word phrases are trusted as-is rather than mined out of free text. (`tests/test_vocabulary.py`, `tests/test_config_merge.py`)
   - **`stt_corrections:`** (mapping `"heard" → "meant"`, on the customer profile) — appended to the analyst system prompt by the new `build_analyst_system_prompt(config)` so the LLM un-mangles a customer's specific jargon on top of the built-in general examples. The classifier builds the prompt once per session. (`tests/test_analyst_prompt.py`)
