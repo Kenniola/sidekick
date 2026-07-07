@@ -109,6 +109,7 @@ class TestAccuracyPipelineConfig:
         assert s.max_surfaced_per_pass == 3
         assert s.surface_threshold == 0.7
         assert s.answer_tier == "auto"
+        assert s.self_critique is False
         assert c.objectives == []
 
     def test_sensitivity_overrides_parsed(self):
@@ -121,6 +122,7 @@ class TestAccuracyPipelineConfig:
                     "max_surfaced_per_pass": 5,
                     "surface_threshold": 0.8,
                     "answer_tier": "DEEP",
+                    "self_critique": True,
                 }
             }
         )
@@ -131,6 +133,7 @@ class TestAccuracyPipelineConfig:
         assert s.max_surfaced_per_pass == 5
         assert s.surface_threshold == 0.8
         assert s.answer_tier == "deep"  # lower-cased
+        assert s.self_critique is True
 
     def test_objectives_trimmed_and_filtered(self):
         c = _parse_config({"objectives": [" land the S3 PoC ", "", "  ", "de-risk F64"]})

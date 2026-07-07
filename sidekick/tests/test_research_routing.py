@@ -1,5 +1,8 @@
 """Tests for research per-domain source routing and verified-URL filtering."""
 
+import pytest
+
+from sidekick.actions import research as research_mod
 from sidekick.actions.research import ResearchPipeline, _WebHit
 
 
@@ -76,3 +79,43 @@ def test_extra_trusted_domains_extends_map():
     hits = [_hit("https://docs.snowflake.com/en/user-guide/intro")]
     ranked = pipeline._rank_hits(hits, domains=None)
     assert len(ranked) == 1
+
+
+class TestSelfCritique:
+    """Phase 4 / A3: draft -> critique -> refine, degrading to the draft."""
+
+    @pytest.mark.asyncio
+    async def test_refines_the_draft(self, monkeypatch):
+        async def _fake_llm(**kwargs):
+            return "  REFINED answer\n\nSources:\n1. url  "
+
+        monkeypatch.setattr(research_mod, "call_llm", _fake_llm)
+        pipeline = ResearchPipeline()
+        out = await pipeline._critique_and_refine(
+            "sys", "prompt", "draft answer", "deep"
+        )
+        assert out == "REFINED answer\n\nSources:\n1. url"
+
+    @pytest.mark.asyncio
+    async def test_degrades_to_draft_on_failure(self, monkeypatch):
+        async def _boom(**kwargs):
+            raise RuntimeError("model down")
+
+        monkeypatch.setattr(research_mod, "call_llm", _boom)
+        pipeline = ResearchPipeline()
+        out = await pipeline._critique_and_refine(
+            "sys", "prompt", "the draft", "deep"
+        )
+        assert out == "the draft"
+
+    @pytest.mark.asyncio
+    async def test_empty_refine_falls_back_to_draft(self, monkeypatch):
+        async def _empty(**kwargs):
+            return "   "
+
+        monkeypatch.setattr(research_mod, "call_llm", _empty)
+        pipeline = ResearchPipeline()
+        out = await pipeline._critique_and_refine(
+            "sys", "prompt", "the draft", "deep"
+        )
+        assert out == "the draft"

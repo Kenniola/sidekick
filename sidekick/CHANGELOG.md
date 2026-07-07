@@ -7,6 +7,16 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 4 (accuracy spec) — deep-default answers + self-critique.** Trades
+  latency for answer accuracy; both opt-in.
+  - **Deep-answer routing (A3).** `sensitivity.answer_tier: "deep"` (and, by
+    default, `accuracy_mode`) routes every substantive answer to the deep lane
+    and the deep model, instead of the complexity-based fast/standard tiers.
+    (`tests/test_priority_queue.py`)
+  - **Self-critique (A3, opt-in).** `sensitivity.self_critique: true` runs the
+    research synthesis as draft → critique-against-sources → refined final
+    answer; degrades to the draft on any failure so an answer is never lost.
+    (`tests/test_research_routing.py`, `tests/test_config_merge.py`)
 - **Phase 3 (accuracy spec) — notification focus.** Replaces the toast-per-finding
   overload with a calm, persistent feed and urgent-only toasts.
   - **Sidekick Feed (B2)** — a persistent activity-bar TreeView (`sidekick-notify`

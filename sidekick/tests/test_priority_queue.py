@@ -23,14 +23,22 @@ from sidekick.queue.priority_queue import ActionResult, PriorityQueue
 # ---------------------------------------------------------------------------
 
 
-def _make_queue(fast=3, standard=2, deep=1) -> PriorityQueue:
+def _make_queue(
+    fast=3, standard=2, deep=1, answer_tier="auto", accuracy_mode=False,
+    self_critique=False,
+) -> PriorityQueue:
     cfg = SimpleNamespace(
         queue=SimpleNamespace(
             fast_lane_max=fast,
             standard_lane_max=standard,
             deep_lane_max=deep,
             stale_expiry_minutes=5,
-        )
+        ),
+        sensitivity=SimpleNamespace(
+            answer_tier=answer_tier,
+            accuracy_mode=accuracy_mode,
+            self_critique=self_critique,
+        ),
     )
     return PriorityQueue(config=cfg)
 
@@ -95,6 +103,20 @@ class TestRouting:
         q = _make_queue()
         assert q._route(_item(complexity="complex")) is q.deep_lane
 
+    def test_deep_answer_tier_routes_all_to_deep(self):
+        q = _make_queue(answer_tier="deep")
+        assert q._route(_item(complexity="simple")) is q.deep_lane
+        assert q._route(_item(complexity="medium")) is q.deep_lane
+
+    def test_accuracy_mode_routes_all_to_deep(self):
+        q = _make_queue(accuracy_mode=True)
+        assert q._route(_item(complexity="simple")) is q.deep_lane
+
+    def test_effective_answer_tier_resolution(self):
+        assert _make_queue()._effective_answer_tier() == "auto"
+        assert _make_queue(answer_tier="deep")._effective_answer_tier() == "deep"
+        assert _make_queue(accuracy_mode=True)._effective_answer_tier() == "deep"
+
     @pytest.mark.asyncio
     async def test_enqueue_places_item_in_routed_lane(self):
         q = _make_queue()
@@ -114,9 +136,11 @@ class _TierCapturingResearch:
     def __init__(self, result=None):
         self.result = result or _FakeResult()
         self.tier = None
+        self.self_critique = None
 
     async def execute_direct(self, **kwargs):
         self.tier = kwargs.get("tier")
+        self.self_critique = kwargs.get("self_critique")
         return self.result
 
 
@@ -151,6 +175,38 @@ class TestTierSelection:
         await q.enqueue(_item(complexity="complex"))
         await q.process_ready(research, _FakePrototype(), context=None)
         assert research.tier == "deep"
+
+    @pytest.mark.asyncio
+    async def test_deep_answer_tier_forces_deep_synthesis(self):
+        q = _make_queue(answer_tier="deep")
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="simple"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.tier == "deep"
+
+    @pytest.mark.asyncio
+    async def test_accuracy_mode_forces_deep_synthesis(self):
+        q = _make_queue(accuracy_mode=True)
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="medium"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.tier == "deep"
+
+    @pytest.mark.asyncio
+    async def test_self_critique_flag_passed_to_research(self):
+        q = _make_queue(self_critique=True)
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="medium"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.self_critique is True
+
+    @pytest.mark.asyncio
+    async def test_self_critique_off_by_default(self):
+        q = _make_queue()
+        research = _TierCapturingResearch()
+        await q.enqueue(_item(complexity="medium"))
+        await q.process_ready(research, _FakePrototype(), context=None)
+        assert research.self_critique is False
 
 
 # ---------------------------------------------------------------------------

@@ -75,4 +75,5 @@ acme:
   #   adjudicator_pause_flush: true     # surface urgent hedges without waiting the interval
   #   max_surfaced_per_pass: 3          # hard cap on items surfaced per pass
   #   surface_threshold: 0.7            # precision gate (higher = stricter)
-  #   answer_tier: auto                 # "deep" forces deep-model answers (Phase 3)
+  #   answer_tier: auto                 # "deep" forces deep-model answers (accuracy_mode implies deep)
+  #   self_critique: false              # draft -> critique -> refine (higher accuracy, ~2x latency)

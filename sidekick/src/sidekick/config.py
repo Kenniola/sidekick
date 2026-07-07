@@ -68,7 +68,8 @@ class SensitivityConfig:
     adjudicator_pause_flush: bool = True     # early flush on a critical hedge
     max_surfaced_per_pass: int = 3           # hard cap per adjudicator pass
     surface_threshold: float = 0.7           # precision gate out of the pass
-    answer_tier: str = "auto"                # "auto" | "deep" (wired in Phase 3)
+    answer_tier: str = "auto"                # "auto" | "deep" deep-model answers
+    self_critique: bool = False              # draft->critique->refine (opt-in)
 
 
 @dataclass
@@ -504,6 +505,7 @@ def _parse_config(raw: dict) -> SidekickConfig:
             max_surfaced_per_pass=sensitivity_raw.get("max_surfaced_per_pass", 3),
             surface_threshold=sensitivity_raw.get("surface_threshold", 0.7),
             answer_tier=str(sensitivity_raw.get("answer_tier", "auto")).lower(),
+            self_critique=_as_bool(sensitivity_raw.get("self_critique", False)),
         ),
         queue=QueueConfig(
             fast_lane_max=queue_raw.get("fast_lane_max", 3),

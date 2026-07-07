@@ -148,7 +148,25 @@ class PriorityQueue:
             item.question[:60],
         )
 
+    def _effective_answer_tier(self) -> str:
+        """Resolve the synthesis tier policy (Phase 4 / A3).
+
+        ``answer_tier: "deep"`` forces deep-model answers; in ``accuracy_mode``
+        the default (``"auto"``) is also treated as deep — trading latency for
+        accuracy. Otherwise answers stay complexity-routed as before.
+        """
+        sens = getattr(self.config, "sensitivity", None)
+        if getattr(sens, "answer_tier", "auto") == "deep":
+            return "deep"
+        if getattr(sens, "accuracy_mode", False):
+            return "deep"
+        return "auto"
+
     def _route(self, item: ActionItem) -> AsyncLane:
+        # Deep-answer policy routes everything to the deep lane so the slower
+        # model gets the 90s budget (mirrors the tier chosen in _execute).
+        if self._effective_answer_tier() == "deep":
+            return self.deep_lane
         if item.complexity == "simple":
             return self.fast_lane
         elif item.complexity == "medium":
@@ -244,8 +262,17 @@ class PriorityQueue:
         # the wall-clock timeout. Hardcoding "deep" (the slowest model) forced
         # the 15s fast lane and 30s standard lane to run claude-opus, which
         # could not finish in time and expired with zero outputs. The mapping
-        # mirrors ``_route``: simple→fast, medium→standard, else→deep.
-        tier = _COMPLEXITY_TIER.get(item.complexity, "deep")
+        # mirrors ``_route``: simple→fast, medium→standard, else→deep. When the
+        # deep-answer policy is active (Phase 4 / A3) every answer uses deep.
+        if self._effective_answer_tier() == "deep":
+            tier = "deep"
+        else:
+            tier = _COMPLEXITY_TIER.get(item.complexity, "deep")
+
+        # Opt-in self-critique (Phase 4 / A3): draft → critique → refine.
+        self_critique = bool(
+            getattr(getattr(self.config, "sensitivity", None), "self_critique", False)
+        )
 
         # When notify is provided, surface the lead answer early via a
         # streaming callback. ``early_fired`` records whether it fired so the
@@ -279,6 +306,7 @@ class PriorityQueue:
                 tier=tier,
                 domains=domains,
                 on_lead=_make_on_lead("research"),
+                self_critique=self_critique,
             )
             return ActionResult(
                 question=item.question,
@@ -299,6 +327,7 @@ class PriorityQueue:
                 tier=tier,
                 domains=domains,
                 on_lead=_make_on_lead(action_type),
+                self_critique=self_critique,
             )
             return ActionResult(
                 question=item.question,

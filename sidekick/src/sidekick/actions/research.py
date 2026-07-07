@@ -175,6 +175,7 @@ class ResearchPipeline:
         tier: str = "deep",
         domains: list[str] | None = None,
         on_lead: Callable[[str], None] | None = None,
+        self_critique: bool = False,
     ) -> ResearchResult:
         """Execute a research query directly (not from queue).
 
@@ -245,7 +246,22 @@ Cite the URLs from web results where they support your answer."""
         domain_scope = ", ".join(domains) if domains else "Microsoft Fabric"
         system_prompt = SYNTHESIS_SYSTEM_PROMPT.format(domain_scope=domain_scope)
 
-        if on_lead is not None:
+        if self_critique:
+            # Phase 4 / A3: draft (non-streaming) → self-critique → refine, then
+            # surface the refined lead once so the feed shows the corrected
+            # answer rather than an un-reviewed streamed draft.
+            draft = await call_llm(
+                system_prompt=system_prompt, user_prompt=user_prompt, tier=tier
+            )
+            answer = await self._critique_and_refine(
+                system_prompt, user_prompt, draft, tier
+            )
+            if on_lead is not None and answer.strip():
+                try:
+                    on_lead(_lead_answer(answer))
+                except Exception:  # noqa: BLE001 — callback must never break synthesis
+                    logger.debug("on_lead callback raised", exc_info=True)
+        elif on_lead is not None:
             answer = await self._synthesise_streaming(
                 system_prompt, user_prompt, tier, on_lead
             )
@@ -319,6 +335,35 @@ Cite the URLs from web results where they support your answer."""
                 except Exception:  # noqa: BLE001
                     logger.debug("on_lead callback raised", exc_info=True)
             return answer
+
+    async def _critique_and_refine(
+        self, system_prompt: str, user_prompt: str, draft: str, tier: str
+    ) -> str:
+        """Second-pass self-critique (Phase 4 / A3).
+
+        Reviews the draft against the sources and answer rules, then returns a
+        corrected final answer. Degrades to the draft on any failure so a
+        critique error never loses the answer.
+        """
+        try:
+            critique_prompt = (
+                "Review the DRAFT answer below against the WEB RESULTS and TEAM "
+                "STANDARDS in the original prompt, and the answer rules. Check: "
+                "is every claim supported by a cited source? Any GA-vs-Preview "
+                "mistakes, hallucinated features, or unsupported specifics? "
+                "Correct them, keep it brief, keep the Sources section, and "
+                "output ONLY the improved final answer.\n\n"
+                f"ORIGINAL PROMPT:\n{user_prompt}\n\nDRAFT ANSWER:\n{draft}"
+            )
+            refined = await call_llm(
+                system_prompt=system_prompt,
+                user_prompt=critique_prompt,
+                tier=tier,
+            )
+            return refined.strip() or draft
+        except Exception as e:  # noqa: BLE001 — never lose the answer
+            logger.warning("Self-critique failed (%s); using draft", e)
+            return draft
 
     async def _rewrite_search_query(
         self, question: str, domains: list[str] | None = None,
