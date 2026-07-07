@@ -9,7 +9,7 @@ server's mutable state explicit and easy to reset between sessions.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
@@ -55,6 +55,12 @@ class SessionState:
     # Domain auto-detection — runs after first 3 classifier batches
     classify_batch_count: int = 0
     domains_detected: bool = False
+
+    # Two-stage accuracy pipeline (Phase 1). In accuracy_mode, fast-tier
+    # candidates accumulate here between deep-tier adjudicator passes.
+    pending_candidates: list = field(default_factory=list)
+    last_adjudicate_time: float = 0.0        # monotonic clock of last pass
+    objectives_inferred: bool = False        # one-shot objective inference guard
 
     # Grounding context cache — avoids re-reading files on every call
     grounding_cache: str | None = None

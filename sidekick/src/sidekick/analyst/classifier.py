@@ -33,6 +33,9 @@ class ActionItem:
     suggest_ask_client: str | None = None
     context_used: list[str] = field(default_factory=list)
     batch_with: str | None = None
+    # One-line justification tying the item to an engagement objective/risk,
+    # set by the Phase 1 relevance adjudicator. None for plain classifier items.
+    rationale: str | None = None
 
 
 @dataclass

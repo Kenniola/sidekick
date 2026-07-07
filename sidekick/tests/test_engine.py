@@ -5,6 +5,7 @@ extraction from server.py is verifiably behaviour-preserving.
 """
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -24,6 +25,9 @@ def _make_state(action_items=None, results=None) -> SessionState:
     s = SessionState()
     s.config = MagicMock()
     s.config.domains = ["Microsoft Fabric"]
+    # Default mode: the two-stage accuracy pipeline is OFF (a MagicMock would
+    # otherwise make accuracy_mode truthy and change dispatch behaviour).
+    s.config.sensitivity.accuracy_mode = False
     s.context = MagicMock()
     s.analyst = MagicMock()
     s.analyst.analyse_chunk = AsyncMock(return_value=action_items or [])
@@ -88,6 +92,68 @@ class TestClassifyAndDispatch:
         assert called["n"] == 0  # not yet
         await engine.classify_and_dispatch(s, ["line"], 0, notify)
         assert called["n"] == 1  # third batch triggers detection
+
+
+class TestAccuracyMode:
+    """Phase 1: candidates accumulate and flush through the deep adjudicator."""
+
+    def _accuracy_state(self, action_items, *, objectives=("goal",)):
+        s = _make_state(action_items=list(action_items))
+        s.config.sensitivity = SimpleNamespace(
+            accuracy_mode=True,
+            adjudicator_interval_seconds=40,
+            adjudicator_pause_flush=True,
+            surface_threshold=0.7,
+            max_surfaced_per_pass=3,
+        )
+        s.config.objectives = list(objectives)
+        s.context = SimpleNamespace(objectives=list(objectives))
+        return s
+
+    @pytest.mark.asyncio
+    async def test_accumulates_without_immediate_enqueue(self, monkeypatch):
+        monkeypatch.delenv("SIDEKICK_ADJUDICATE_INTERVAL", raising=False)
+        items = [
+            SimpleNamespace(priority_score=0.5),
+            SimpleNamespace(priority_score=0.6),
+        ]
+        s = self._accuracy_state(items)
+        await engine.classify_and_dispatch(s, ["line"], 0, MagicMock())
+        # Interval not elapsed and no critical candidate → buffered, not enqueued.
+        assert s.queue.enqueue.await_count == 0
+        assert s.pending_candidates == items
+
+    @pytest.mark.asyncio
+    async def test_flushes_on_interval_elapsed(self, monkeypatch):
+        import time as _t
+
+        monkeypatch.delenv("SIDEKICK_ADJUDICATE_INTERVAL", raising=False)
+        surfaced = [SimpleNamespace(priority_score=0.9)]
+        adj_mock = AsyncMock(return_value=surfaced)
+        monkeypatch.setattr("sidekick.analyst.adjudicator.adjudicate", adj_mock)
+
+        items = [SimpleNamespace(priority_score=0.5)]
+        s = self._accuracy_state(items)
+        s.last_adjudicate_time = _t.monotonic() - 100  # 40s interval elapsed
+
+        await engine.classify_and_dispatch(s, ["line"], 0, MagicMock())
+        adj_mock.assert_awaited_once()
+        assert s.queue.enqueue.await_count == 1
+        assert s.pending_candidates == []
+
+    @pytest.mark.asyncio
+    async def test_early_flush_on_critical_candidate(self, monkeypatch):
+        monkeypatch.delenv("SIDEKICK_ADJUDICATE_INTERVAL", raising=False)
+        adj_mock = AsyncMock(return_value=[SimpleNamespace(priority_score=0.95)])
+        monkeypatch.setattr("sidekick.analyst.adjudicator.adjudicate", adj_mock)
+
+        # Interval NOT elapsed, but a critical (>=0.9) candidate forces a flush.
+        items = [SimpleNamespace(priority_score=0.95)]
+        s = self._accuracy_state(items)
+
+        await engine.classify_and_dispatch(s, ["line"], 0, MagicMock())
+        adj_mock.assert_awaited_once()
+        assert s.queue.enqueue.await_count == 1
 
 
 class TestDetectDomains:

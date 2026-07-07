@@ -95,3 +95,48 @@ class TestParseConfig:
         c = _parse_config({"queue": {"fast_lane_max": 9, "deep_lane_max": 4}})
         assert c.queue.fast_lane_max == 9
         assert c.queue.deep_lane_max == 4
+
+
+class TestAccuracyPipelineConfig:
+    """Phase 1 sensitivity + objectives config."""
+
+    def test_defaults(self):
+        c = _parse_config({})
+        s = c.sensitivity
+        assert s.accuracy_mode is False
+        assert s.adjudicator_interval_seconds == 40
+        assert s.adjudicator_pause_flush is True
+        assert s.max_surfaced_per_pass == 3
+        assert s.surface_threshold == 0.7
+        assert s.answer_tier == "auto"
+        assert c.objectives == []
+
+    def test_sensitivity_overrides_parsed(self):
+        c = _parse_config(
+            {
+                "sensitivity": {
+                    "accuracy_mode": True,
+                    "adjudicator_interval_seconds": 25,
+                    "adjudicator_pause_flush": False,
+                    "max_surfaced_per_pass": 5,
+                    "surface_threshold": 0.8,
+                    "answer_tier": "DEEP",
+                }
+            }
+        )
+        s = c.sensitivity
+        assert s.accuracy_mode is True
+        assert s.adjudicator_interval_seconds == 25
+        assert s.adjudicator_pause_flush is False
+        assert s.max_surfaced_per_pass == 5
+        assert s.surface_threshold == 0.8
+        assert s.answer_tier == "deep"  # lower-cased
+
+    def test_objectives_trimmed_and_filtered(self):
+        c = _parse_config({"objectives": [" land the S3 PoC ", "", "  ", "de-risk F64"]})
+        assert c.objectives == ["land the S3 PoC", "de-risk F64"]
+
+    def test_accuracy_mode_env_override(self, monkeypatch):
+        monkeypatch.setenv("SIDEKICK_ACCURACY_MODE", "true")
+        assert _parse_config({}).sensitivity.accuracy_mode is True
+

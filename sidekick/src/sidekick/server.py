@@ -90,6 +90,12 @@ def _init_session(config_name: str = "default"):
 
     _state.config = load_config(config_name)
     _state.context = MeetingContext(customer_name=_state.config.customer)
+    # Seed explicit engagement objectives (Phase 1 / A2) so the adjudicator has
+    # goals from the first pass; an add_context "goal: …" note or auto-inference
+    # fills them in otherwise.
+    if getattr(_state.config, "objectives", None):
+        _state.context.objectives = list(_state.config.objectives)
+        _state.objectives_inferred = True
     _state.analyst = TranscriptAnalyst(config=_state.config, context=_state.context)
     _state.queue = PriorityQueue(config=_state.config)
     _state.session_log = SessionLog(config=_state.config)
@@ -109,6 +115,22 @@ def _init_session(config_name: str = "default"):
 # The live audio loop (capture → transcribe → batch → classify → dispatch)
 # lives in ``sidekick.engine`` (``run_listen_loop``) so it can be tested with
 # fake capture/recogniser components. ``listen`` launches it as a task.
+
+
+def _parse_goal_note(text: str) -> list[str]:
+    """Extract objectives from a ``goal:``/``goals:`` context note, else [].
+
+    Splits the note body on newlines and semicolons so a multi-goal note like
+    ``"goal: land the S3 PoC; de-risk F64 sizing"`` becomes two objectives.
+    """
+    stripped = text.strip()
+    low = stripped.lower()
+    for prefix in ("goals:", "goal:"):
+        if low.startswith(prefix):
+            body = stripped[len(prefix):]
+            parts = re.split(r"[\n;]+", body)
+            return [p.strip(" -\u2022\t") for p in parts if p.strip(" -\u2022\t")]
+    return []
 
 
 def _notify(result) -> None:
@@ -508,6 +530,13 @@ async def add_context(
     if content:
         _state.context.context_documents.append(content)
         added.append(f"Text note ({len(content)} chars)")
+        # A "goal:"-prefixed note sets the engagement objectives the Phase 1
+        # adjudicator scores relevance against (highest-priority source).
+        goals = _parse_goal_note(content)
+        if goals:
+            _state.context.objectives = goals
+            _state.objectives_inferred = True
+            added.append(f"Objectives set ({len(goals)})")
 
     # 2. File content
     if file_path:

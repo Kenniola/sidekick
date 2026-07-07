@@ -54,6 +54,11 @@ class MeetingContext:
     # Injected context — documents, notes, and image descriptions added live
     context_documents: list[str] = field(default_factory=list)
 
+    # Engagement objectives (Phase 1 / A2). Set from an ``add_context
+    # "goal: …"`` note, seeded from config, or auto-inferred from the opening
+    # minutes. The relevance adjudicator scores candidates against these.
+    objectives: list[str] = field(default_factory=list)
+
     # Auto-detected domains from transcript (supplements config domains)
     detected_domains: list[str] = field(default_factory=list)
 

@@ -59,6 +59,16 @@ class SensitivityConfig:
     analyst_interval_seconds: int = 10
     verify_consultant_answers: bool = True
     show_verifications: str = "corrections_only"
+    # Two-stage accuracy pipeline (Phase 1 / A1). When ``accuracy_mode`` is on,
+    # fast per-chunk classification only produces *candidates*; a periodic
+    # deep-tier adjudicator selects the few worth surfacing. All default-off /
+    # no-op so existing behaviour is unchanged.
+    accuracy_mode: bool = False
+    adjudicator_interval_seconds: int = 40  # deep-pass cadence ceiling
+    adjudicator_pause_flush: bool = True     # early flush on a critical hedge
+    max_surfaced_per_pass: int = 3           # hard cap per adjudicator pass
+    surface_threshold: float = 0.7           # precision gate out of the pass
+    answer_tier: str = "auto"                # "auto" | "deep" (wired in Phase 3)
 
 
 @dataclass
@@ -261,6 +271,11 @@ class SidekickConfig:
     # Appended to the analyst system prompt so the LLM un-mangles the customer's
     # specific jargon on top of the built-in general examples.
     stt_corrections: dict[str, str] = field(default_factory=dict)
+    # Engagement objectives (Phase 1 / A2) — concrete goals the adjudicator
+    # scores relevance against. May be set explicitly here, via an
+    # ``add_context "goal: …"`` note at call start, or auto-inferred from the
+    # opening minutes when left empty.
+    objectives: list[str] = field(default_factory=list)
     sensitivity: SensitivityConfig = field(default_factory=SensitivityConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
     phases: PhasesConfig = field(default_factory=PhasesConfig)
@@ -452,12 +467,30 @@ def _parse_config(raw: dict) -> SidekickConfig:
             for k, v in (raw.get("stt_corrections") or {}).items()
             if str(k).strip() and str(v).strip()
         },
+        objectives=[
+            str(o).strip() for o in (raw.get("objectives") or []) if str(o).strip()
+        ],
         sensitivity=SensitivityConfig(
             trigger_threshold=sensitivity_raw.get("trigger_threshold", 0.5),
             noise_filter=sensitivity_raw.get("noise_filter", "medium"),
             analyst_interval_seconds=sensitivity_raw.get("analyst_interval_seconds", 10),
             verify_consultant_answers=sensitivity_raw.get("verify_consultant_answers", True),
             show_verifications=sensitivity_raw.get("show_verifications", "corrections_only"),
+            accuracy_mode=_as_bool(
+                os.environ.get(
+                    "SIDEKICK_ACCURACY_MODE",
+                    sensitivity_raw.get("accuracy_mode", False),
+                )
+            ),
+            adjudicator_interval_seconds=sensitivity_raw.get(
+                "adjudicator_interval_seconds", 40
+            ),
+            adjudicator_pause_flush=_as_bool(
+                sensitivity_raw.get("adjudicator_pause_flush", True)
+            ),
+            max_surfaced_per_pass=sensitivity_raw.get("max_surfaced_per_pass", 3),
+            surface_threshold=sensitivity_raw.get("surface_threshold", 0.7),
+            answer_tier=str(sensitivity_raw.get("answer_tier", "auto")).lower(),
         ),
         queue=QueueConfig(
             fast_lane_max=queue_raw.get("fast_lane_max", 3),

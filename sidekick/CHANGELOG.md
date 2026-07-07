@@ -8,6 +8,29 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ### Added
 
+- **Phase 1 (accuracy spec) — two-stage relevance pipeline.** A high-recall fast
+  detector now feeds a periodic **deep-tier relevance adjudicator** that surfaces
+  only the few questions genuinely worth the consultant's attention, each with a
+  one-line rationale tied to the engagement's objectives. Off by default
+  (`sensitivity.accuracy_mode`), so existing behaviour is unchanged.
+  - **`analyst/adjudicator.py`** — `adjudicate()` runs a deep-tier reasoning
+    pass over the fast classifier's candidates, merges near-duplicates,
+    re-scores, caps at `max_surfaced_per_pass` (3), gates at `surface_threshold`
+    (0.7), and degrades to a deterministic threshold filter on any error.
+    `ActionItem` gains a `rationale` field. (`tests/test_adjudicator.py`)
+  - **Engagement objectives** (`objectives:` / `context.objectives`) — set via an
+    `add_context "goal: …"` note (highest priority), seeded from the profile, or
+    auto-inferred from the opening minutes (`engine.infer_objectives`). The
+    adjudicator scores relevance against them. (`tests/test_objectives.py`)
+  - **Engine cadence** — in accuracy mode candidates accumulate and flush through
+    the adjudicator every `adjudicator_interval_seconds` (40, a configurable
+    *ceiling*), with an early flush on a critical hedge when
+    `adjudicator_pause_flush` is on. (`tests/test_engine.py`)
+  - New `sensitivity` config: `accuracy_mode`, `adjudicator_interval_seconds`,
+    `adjudicator_pause_flush`, `max_surfaced_per_pass`, `surface_threshold`,
+    `answer_tier` (wired in Phase 3), plus `objectives:` — all documented in
+    `configs/_template.yaml`. (`tests/test_config_merge.py`)
+
 - **Phase 0 (accuracy spec) — STT model benchmark & selection.**
   - **`sidekick benchmark-stt`** measures each candidate Whisper model's
     real-time factor (RTF) on the actual machine — from a `--audio` file or a

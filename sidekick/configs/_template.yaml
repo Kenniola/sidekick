@@ -50,3 +50,23 @@ acme:
   # your microphone (default: system audio only, tagged "(audio)").
   # speech:
   #   capture_microphone: true
+
+  # Uncomment to state the engagement objectives the relevance adjudicator
+  # scores questions against. If omitted, set them live at call start with an
+  # add_context "goal: …" note, or Sidekick infers them from the opening
+  # few minutes.
+  # objectives:
+  #   - De-risk the F64 capacity sizing for the overnight Spark load
+  #   - Land the S3 shortcut PoC with the client's security team
+
+  # Accuracy pipeline (Phase 1). Two-stage: a fast per-chunk detector feeds a
+  # periodic deep-tier adjudicator that surfaces only the few most relevant
+  # questions — trading a little latency for higher precision and far fewer
+  # notifications. All off by default.
+  # sensitivity:
+  #   accuracy_mode: true               # enable the two-stage pipeline
+  #   adjudicator_interval_seconds: 40  # deep-pass cadence ceiling (lower = snappier)
+  #   adjudicator_pause_flush: true     # surface urgent hedges without waiting the interval
+  #   max_surfaced_per_pass: 3          # hard cap on items surfaced per pass
+  #   surface_threshold: 0.7            # precision gate (higher = stricter)
+  #   answer_tier: auto                 # "deep" forces deep-model answers (Phase 3)

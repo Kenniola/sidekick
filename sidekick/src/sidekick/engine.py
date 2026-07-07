@@ -93,8 +93,15 @@ async def classify_and_dispatch(
     if state.classify_batch_count == 3 and not state.domains_detected:
         await detect_domains(state)
 
-    for item in action_items:
-        await state.queue.enqueue(item)
+    # Accuracy pipeline (Phase 1): in accuracy_mode the fast classifier only
+    # produces *candidates* — a periodic deep-tier adjudicator selects the few
+    # worth surfacing. Default mode enqueues immediately (unchanged behaviour).
+    if _accuracy_mode(state):
+        await _accumulate_and_maybe_adjudicate(state, action_items)
+    else:
+        for item in action_items:
+            await state.queue.enqueue(item)
+
     results = await state.queue.process_ready(
         research=state.research,
         prototype=state.prototype,
@@ -134,6 +141,128 @@ async def classify_and_dispatch(
             state.vocabulary.update(corrected)
         except Exception as e:  # noqa: BLE001 — prior is best-effort, never fatal
             logger.debug("Vocabulary update skipped: %s", e)
+
+
+async def infer_objectives(state: SessionState) -> None:
+    """Infer engagement objectives from the opening transcript (Phase 1 / A2).
+
+    Runs a fast-tier LLM call over the first few minutes when no objectives are
+    set explicitly, so the relevance adjudicator has goals to score against.
+    Best-effort — failure leaves objectives empty (the adjudicator then infers
+    from context). Runs at most once per session.
+    """
+    if state.objectives_inferred or not state.context or not state.config:
+        return
+    sample = state.context.full_transcript[-40:]
+    if len(sample) < 10:
+        return
+
+    from sidekick.llm import call_llm, parse_llm_json
+
+    sample_text = "\n".join(
+        f"{getattr(line, 'speaker', '?')}: {getattr(line, 'text', str(line))}"
+        for line in sample
+    )
+    try:
+        result = await call_llm(
+            system_prompt=(
+                "You infer the concrete OBJECTIVES of a consulting meeting from "
+                "its opening. Return a JSON object with a single key "
+                '"objectives" containing 2-4 short goal strings (what the '
+                "consultant is trying to achieve or decide). Be specific and "
+                "grounded in what was actually said; do not invent goals."
+            ),
+            user_prompt=f"Meeting opening:\n{sample_text}",
+            json_output=True,
+            tier="fast",
+            timeout=10,
+        )
+        data = parse_llm_json(result)
+        objs = [
+            str(o).strip() for o in (data.get("objectives") or []) if str(o).strip()
+        ]
+        if objs:
+            state.context.objectives = objs[:4]
+            logger.info("Auto-inferred objectives: %s", objs[:4])
+    except Exception as e:  # noqa: BLE001 — best-effort; never fatal
+        logger.debug("Objective inference failed: %s", e)
+    state.objectives_inferred = True
+
+
+def _accuracy_mode(state: SessionState) -> bool:
+    """True when the two-stage accuracy pipeline is enabled for this session."""
+    sens = getattr(state.config, "sensitivity", None) if state.config else None
+    return bool(getattr(sens, "accuracy_mode", False))
+
+
+def _should_adjudicate(state: SessionState, has_critical: bool) -> bool:
+    """Flush the candidate buffer when the interval elapses or on a hedge.
+
+    Interval-based cadence (a ceiling, configurable via
+    ``SIDEKICK_ADJUDICATE_INTERVAL`` or ``adjudicator_interval_seconds``) with
+    an early flush when a critical candidate (e.g. a consultant hedge) is
+    pending so urgent items surface without waiting out the interval.
+    """
+    if not state.pending_candidates:
+        return False
+    sens = state.config.sensitivity
+    interval = float(
+        os.environ.get(
+            "SIDEKICK_ADJUDICATE_INTERVAL",
+            str(getattr(sens, "adjudicator_interval_seconds", 40)),
+        )
+    )
+    if (time.monotonic() - state.last_adjudicate_time) >= interval:
+        return True
+    if getattr(sens, "adjudicator_pause_flush", True) and has_critical:
+        return True
+    return False
+
+
+async def _ensure_objectives(state: SessionState) -> None:
+    """Populate ``context.objectives`` from config, else auto-infer once."""
+    if getattr(state.context, "objectives", None):
+        return
+    if state.objectives_inferred:
+        return
+    cfg_objs = list(getattr(state.config, "objectives", None) or [])
+    if cfg_objs:
+        state.context.objectives = cfg_objs
+        state.objectives_inferred = True
+        return
+    if state.classify_batch_count >= 3:
+        await infer_objectives(state)
+
+
+async def _accumulate_and_maybe_adjudicate(
+    state: SessionState, action_items: list
+) -> None:
+    """Buffer candidates and run the deep-tier adjudicator on cadence."""
+    from sidekick.analyst.adjudicator import adjudicate
+
+    if state.last_adjudicate_time == 0.0:
+        state.last_adjudicate_time = time.monotonic()
+
+    await _ensure_objectives(state)
+
+    state.pending_candidates.extend(action_items)
+    has_critical = any(
+        getattr(i, "priority_score", 0.0) >= 0.9 for i in state.pending_candidates
+    )
+    if not _should_adjudicate(state, has_critical):
+        return
+
+    surfaced = await adjudicate(
+        state.pending_candidates,
+        state.context,
+        state.config,
+        getattr(state, "grounding_cache", None) or "",
+        objectives=list(getattr(state.context, "objectives", None) or []),
+    )
+    state.pending_candidates = []
+    state.last_adjudicate_time = time.monotonic()
+    for item in surfaced:
+        await state.queue.enqueue(item)
 
 
 # ---------------------------------------------------------------------------
