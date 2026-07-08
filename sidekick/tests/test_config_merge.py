@@ -155,6 +155,7 @@ class TestSpeechDecodeConfig:
         assert sp.log_prob_threshold == -1.0
         assert sp.compression_ratio_threshold == 2.4
         assert sp.echo_suppression is True
+        assert sp.speaker_naming is True
 
     def test_overrides_parsed(self):
         sp = _parse_config(
@@ -166,6 +167,7 @@ class TestSpeechDecodeConfig:
                     "log_prob_threshold": -0.8,
                     "compression_ratio_threshold": 2.0,
                     "echo_suppression": False,
+                    "speaker_naming": False,
                 }
             }
         ).speech
@@ -175,5 +177,6 @@ class TestSpeechDecodeConfig:
         assert sp.log_prob_threshold == -0.8
         assert sp.compression_ratio_threshold == 2.0
         assert sp.echo_suppression is False
+        assert sp.speaker_naming is False
 
 

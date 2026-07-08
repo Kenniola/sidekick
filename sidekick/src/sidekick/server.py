@@ -783,6 +783,9 @@ async def stop(deliverables: bool = True) -> str:
     deliverables_digest = ""
     deliverables_path = ""
     if _state.session_log and _state.context:
+        # Attribute transcript lines to named participants first (Phase 7) so
+        # the summary, transcript, and deliverables all read with names.
+        await engine.name_speakers(_state)
         summary = _state.session_log.generate_summary(_state.context)
         path = _state.session_log.save_to_disk()
         if path:

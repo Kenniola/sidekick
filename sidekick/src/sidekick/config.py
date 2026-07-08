@@ -175,6 +175,11 @@ class SpeechConfig:
     # duplicate line from the other capture within a short window (speaker
     # bleed between mic and loopback). No-op unless capture_microphone is on.
     echo_suppression: bool = True
+    # Post-call LLM speaker-naming (Phase 7 / C3 Tier 2). Attributes transcript
+    # lines to named participants (from the roster + intros) at stop so the
+    # transcript/summary/deliverables read with names. Best-effort; degrades to
+    # source tags on failure.
+    speaker_naming: bool = True
 
 
 # Canonical default model fallback chains, shared with llm._TIER_CONFIG.
@@ -563,6 +568,7 @@ def _parse_config(raw: dict) -> SidekickConfig:
                 speech_raw.get("compression_ratio_threshold", 2.4)
             ),
             echo_suppression=_as_bool(speech_raw.get("echo_suppression", True)),
+            speaker_naming=_as_bool(speech_raw.get("speaker_naming", True)),
         ),
         models=ModelsConfig(
             fast=models_raw.get("fast") or list(_DEFAULT_MODEL_CHAINS["fast"]),

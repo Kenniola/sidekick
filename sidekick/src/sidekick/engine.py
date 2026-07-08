@@ -265,6 +265,40 @@ async def _accumulate_and_maybe_adjudicate(
         await state.queue.enqueue(item)
 
 
+async def name_speakers(state: SessionState) -> None:
+    """Attribute transcript lines to named participants (Phase 7 / C3 Tier 2).
+
+    Runs at ``stop`` (off the live path). Mutates ``line.speaker`` in place for
+    confidently-attributed lines so the transcript, summary, and deliverables
+    read with names. Best-effort — any failure leaves the source tags intact.
+    """
+    if not state.context or not state.config:
+        return
+    if not getattr(getattr(state.config, "speech", None), "speaker_naming", True):
+        return
+    lines = getattr(state.context, "full_transcript", None) or []
+    if not lines:
+        return
+    try:
+        from sidekick.analyst.speakers import build_roster, name_lines
+
+        roster = build_roster(state.config, state.context)
+        if not roster:
+            return
+        labels = await name_lines(lines, roster)
+        for idx, name in labels.items():
+            try:
+                lines[idx].speaker = name
+            except Exception:  # noqa: BLE001 — one bad line must not abort
+                logger.debug("Could not set speaker on line %d", idx, exc_info=True)
+        if labels:
+            logger.info(
+                "Speaker naming labelled %d/%d lines", len(labels), len(lines)
+            )
+    except Exception as e:  # noqa: BLE001 — never break stop
+        logger.warning("Speaker naming failed: %s", e)
+
+
 # ---------------------------------------------------------------------------
 # Live audio loop (Phase 3 — extracted from server._run_listen_loop)
 # ---------------------------------------------------------------------------

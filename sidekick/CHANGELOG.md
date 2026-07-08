@@ -7,6 +7,16 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 7 (accuracy spec) — LLM speaker-naming.** A best-effort, post-call
+  pass attributes transcript lines to named participants using conversational
+  cues (self-introductions, direct address, turn-taking) from the roster
+  (`config.consultant_names` / `client_names` + detected participants). Runs at
+  `stop`, off the live path, so the transcript, summary, and deliverables read
+  with names instead of a single `(audio)` tag. Conservative and partial — only
+  confident lines are labelled; any failure leaves the source tags intact.
+  Toggle with `speech.speaker_naming` (default on). New `analyst/speakers.py`
+  (`build_roster`, `name_lines`) + `engine.name_speakers`.
+  (`tests/test_speakers.py`, `tests/test_config_merge.py`)
 - **Phase 6 (accuracy spec) — relevance & accuracy engine.** Acts on the MoJ
   08-Jul session study; all behaviour improvements, no new config.
   - **Classifier precision (6.1).** The analyst prompt now explicitly excludes

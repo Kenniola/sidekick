@@ -56,6 +56,7 @@ acme:
   #   log_prob_threshold: -1.0     # drop low-confidence decodes
   #   compression_ratio_threshold: 2.4  # drop repetitive/hallucinated decodes
   #   echo_suppression: true       # de-dup speaker bleed across mic + loopback
+  #   speaker_naming: true         # name transcript lines from the roster at stop (post-call)
 
   # Uncomment to state the engagement objectives the relevance adjudicator
   # scores questions against. If omitted, set them live at call start with an
