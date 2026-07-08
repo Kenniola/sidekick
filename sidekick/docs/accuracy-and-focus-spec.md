@@ -509,3 +509,95 @@ the P1 "don't research the consultant's own words" rule.
 biggest accuracy lever now that the pipeline exists) → **Phase 5** (feed UX,
 mostly extension) → **Phase 7** (speaker-naming, enables deeper 6.1).
 
+---
+
+# Delivery status (as of 08 Jul 2026)
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| 0 | STT benchmark + model selection + per-speaker repetition | ✅ shipped |
+| 1 | Two-stage relevance adjudicator + objectives | ✅ shipped |
+| 2 | Decode tuning + chunking + echo suppression | ✅ shipped |
+| 3 | Feed view + gated toasts + supersede/dedup | ✅ shipped |
+| 4 | Deep-default answers + self-critique | ✅ shipped |
+| 5 | Feed UX & session hygiene | ✅ shipped |
+| 6 | Relevance & accuracy engine | ✅ shipped |
+| 7 | LLM speaker-naming | ✅ shipped |
+| 8 | Research quality + feed clarity | ✅ shipped |
+| 9 | Keyless web search + feed prettify + auto-suggest | ⬜ planned |
+
+Config applied to the MoJ profile: `accuracy_mode: true`, glossary. STT model
+stays `small.en` (benchmark). Extension at v0.6.0.
+
+---
+
+# Post-test findings #2 — MoJ session 2, 08 Jul 2026 → Phase 8 (shipped)
+
+Second run confirmed the earlier fixes working (action-item table populated,
+cleaner follow-ups, `ADO` correct via glossary, partial speaker-naming). New
+issues found and fixed in **Phase 8**:
+
+- **8.1 Relevance-aware source ranking.** Hits were ranked by *source trust only*,
+  so an off-topic `learn.microsoft.com` page outranked an on-topic one (e.g. a
+  Cosmos DB URL cited for a Terraform question). Now scored by topical relevance
+  × trust; off-topic high-trust pages are demoted, and a relevant reputable
+  non-Microsoft source can outrank an off-topic Microsoft page.
+- **8.2 Extended verified sources.** Added HashiCorp/Terraform + reputable
+  technical hosts to the trust map + routing.
+- **8.3 Relevance-floored citations.** Only sources clearing a relevance floor
+  are cited — a weakly-matched URL is dropped rather than surfaced.
+- **8.4 Real confidence.** Confidence is parsed from the model's stated
+  HIGH/MEDIUM/LOW instead of a hardcoded "medium".
+- **8.5 / 8.6 Feed clarity.** Rows lead with the **question**; drill-down shows
+  the **full answer** + real confidence; **"Research in Chat"** surfaces the
+  finding as `@sidekick research <question>`.
+
+**Limitation surfaced:** non-Microsoft URLs still require a web-search key
+because MS Learn (the only keyless provider) returns Microsoft-only content →
+Phase 9.
+
+---
+
+# Phase 9 — Keyless web reach, feed polish, proactive suggestions
+
+## 9.1 Keyless web search (no per-user API keys)
+Adoption blocker: requiring each user to configure a Tavily/Brave key. Fix,
+layered:
+- **DuckDuckGo default provider** — a keyless package (`ddgs`) adds real web
+  results (AWS, HashiCorp, Databricks, etc.) with no key/signup, run through the
+  existing trust-map + relevance ranking. Best-effort: degrades to MS Learn +
+  model knowledge on rate-limit/failure.
+- **Shared org key (optional).** One `TAVILY_API_KEY` set centrally (installer /
+  default config) that all installs inherit — nobody configures anything; used
+  as the reliable override when present.
+- **LLM-proposed-URL validation (safety net).** The synthesis model proposes
+  canonical doc URLs from training knowledge; each is HTTP-validated (200 from a
+  trusted host) before citing, so niche non-MS topics get accurate links with no
+  search API and no hallucinated URLs.
+- **Provider precedence:** shared/user key (Tavily/Brave) → DuckDuckGo →
+  MS Learn only. Ranking/verification unchanged.
+
+## 9.2 Feed prettify (readability)
+VS Code TreeItem **labels are plain text** (can't render markdown), so
+`**Direct answer:**` shows literal asterisks. Fixes:
+- **Strip markdown** from row labels (`**`, `##`, `_`) for clean one-liners.
+- **Numbering** — running `1.`, `2.`, `3.` prefix per row.
+- **Confidence at a glance** — icon colour by confidence (green/amber/grey) +
+  a `HIGH`/`MED`/`LOW` tag in the description.
+- **Group by thread** — collapsible thread parent nodes with findings nested
+  underneath (needs `thread_id` populated on alerts — small Python change).
+- Keep the rich markdown answer in the hover tooltip (already there).
+
+## 9.3 Proactive auto-suggested questions
+Make the existing (manual) `suggest_questions` reasoning **proactive**: a
+periodic pass (piggybacking the adjudicator cadence) that, once context is rich
+enough, generates **1–2 high-value questions the consultant should ask the
+client now** and slots them into the feed as a distinct type (`💡 [ask]`).
+Guardrails: config-gated (`sensitivity.auto_suggest`), capped at 1–2 per pass,
+deduped, only on genuinely new context — proactive without nagging.
+
+## Recommended order
+**9.1** (keyless web — biggest remaining accuracy gap) → **9.2** (readability) →
+**9.3** (autonomy). All additive/opt-in; defaults unchanged.
+
+
