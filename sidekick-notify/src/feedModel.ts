@@ -33,6 +33,52 @@ export interface FeedEntry {
   superseded: boolean;
 }
 
+/** A child row shown when a feed entry is expanded (Phase 5 / 5.2). */
+export interface DetailNode {
+  kind: "detail";
+  label: string;
+  value: string;
+  url?: string;
+  file?: string;
+  chat?: boolean;
+}
+
+// Short category tags shown beside the icon (Phase 5 / 5.1).
+const TYPE_TAG: Record<string, string> = {
+  research: "research",
+  sizing: "sizing",
+  roadmap: "roadmap",
+  prototype: "proto",
+  diagnostic: "diag",
+  action_item: "action",
+  deliverables: "deliverable",
+};
+
+export function typeTag(type: string): string {
+  return TYPE_TAG[type] ?? type;
+}
+
+/** Build the expandable detail rows for a finding (pure — no vscode). */
+export function detailNodes(entry: FeedEntry): DetailNode[] {
+  const nodes: DetailNode[] = [];
+  if (entry.rationale) {
+    nodes.push({ kind: "detail", label: "Why", value: entry.rationale });
+  }
+  if (entry.source) {
+    nodes.push({ kind: "detail", label: "Source", value: entry.source, url: entry.source });
+  }
+  if (entry.file) {
+    nodes.push({ kind: "detail", label: "File", value: entry.file, file: entry.file });
+  }
+  nodes.push({
+    kind: "detail",
+    label: "Meta",
+    value: `${entry.priority} priority · ${entry.confidence} confidence`,
+  });
+  nodes.push({ kind: "detail", label: "", value: "View in Chat", chat: true });
+  return nodes;
+}
+
 const MAX_ENTRIES = 200;
 
 /** Stable key for supersede/dedup — prefers the server-provided id. */
@@ -116,6 +162,11 @@ export class FeedModel {
     for (const e of this.entries) {
       e.seen = true;
     }
+  }
+
+  /** Clear the feed — called when a new session starts (Phase 5 / 5.3). */
+  clear(): void {
+    this.entries = [];
   }
 
   /** True when an entry is older than ttlMs relative to nowMs (epoch ms). */

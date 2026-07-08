@@ -202,3 +202,51 @@ class TestNotify:
         monkeypatch.setattr(sys, "platform", "linux")  # skip sound
         notifier.notify(_FakeResult(), sound="silent", alerts_dir=tmp_path)
         assert (tmp_path / "alerts.jsonl").exists()
+
+
+class TestStableId:
+    def test_plain_question(self):
+        assert notifier._stable_id("research", "What is F64?") == "research:What is F64?"
+
+    def test_strips_enriched_wrapper(self):
+        q = "[ENRICHED] What is F64? (previous answer: it is X)"
+        assert notifier._stable_id("research", q) == "research:What is F64?"
+
+    def test_enriched_alert_matches_original_id(self, tmp_path):
+        notifier.write_alert(
+            _FakeResult(action_type="research", question="What is F64?"),
+            alerts_dir=tmp_path,
+        )
+        notifier.write_alert(
+            _FakeResult(
+                action_type="research",
+                question="[ENRICHED] What is F64? (previous answer: X)",
+            ),
+            alerts_dir=tmp_path,
+        )
+        lines = (
+            (tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip().splitlines()
+        )
+        ids = [json.loads(ln)["id"] for ln in lines]
+        assert ids[0] == ids[1] == "research:What is F64?"
+
+
+class TestRotateAlerts:
+    def test_archives_existing_file(self, tmp_path):
+        (tmp_path / "alerts.jsonl").write_text('{"x":1}\n', encoding="utf-8")
+        notifier.rotate_alerts(alerts_dir=tmp_path)
+        assert not (tmp_path / "alerts.jsonl").exists()
+        archived = list((tmp_path / "archive").glob("alerts_*.jsonl"))
+        assert len(archived) == 1
+        assert archived[0].read_text(encoding="utf-8") == '{"x":1}\n'
+
+    def test_noop_when_no_file(self, tmp_path):
+        notifier.rotate_alerts(alerts_dir=tmp_path)
+        assert not (tmp_path / "archive").exists()
+
+    def test_noop_when_empty_file(self, tmp_path):
+        (tmp_path / "alerts.jsonl").write_text("", encoding="utf-8")
+        notifier.rotate_alerts(alerts_dir=tmp_path)
+        # Empty file is left as-is (nothing worth archiving).
+        assert (tmp_path / "alerts.jsonl").exists()
+        assert not (tmp_path / "archive").exists()

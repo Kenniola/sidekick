@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { FeedModel, FeedEntry, Alert, isHighPriority } from "./feedModel";
+import { FeedModel, FeedEntry, DetailNode, Alert, isHighPriority, typeTag, detailNodes } from "./feedModel";
 
 const ALERTS_PATH = path.join(
   os.homedir(),
@@ -19,9 +19,25 @@ let statusBar: vscode.StatusBarItem;
 const model = new FeedModel();
 let feedProvider: SidekickFeedProvider;
 
-// ── Feed TreeView (B2) ─────────────────────────────────────────────────
+// ── Feed TreeView (B2 + Phase 5 drill-down) ────────────────────────────
 
-class SidekickFeedProvider implements vscode.TreeDataProvider<FeedEntry> {
+type FeedNode = FeedEntry | DetailNode;
+
+function isDetail(node: FeedNode): node is DetailNode {
+  return (node as DetailNode).kind === "detail";
+}
+
+const TYPE_ICON: Record<string, string> = {
+  research: "search",
+  prototype: "tools",
+  roadmap: "map",
+  sizing: "graph",
+  diagnostic: "pulse",
+  action_item: "checklist",
+  deliverables: "package",
+};
+
+class SidekickFeedProvider implements vscode.TreeDataProvider<FeedNode> {
   private _onDidChange = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
@@ -29,74 +45,81 @@ class SidekickFeedProvider implements vscode.TreeDataProvider<FeedEntry> {
     this._onDidChange.fire();
   }
 
-  getTreeItem(entry: FeedEntry): vscode.TreeItem {
-    const item = new vscode.TreeItem(
-      entry.headline,
-      vscode.TreeItemCollapsibleState.None
-    );
+  getTreeItem(node: FeedNode): vscode.TreeItem {
+    return isDetail(node) ? this.detailItem(node) : this.entryItem(node);
+  }
 
-    const iconId: Record<string, string> = {
-      research: "search",
-      prototype: "tools",
-      roadmap: "map",
-      sizing: "graph",
-      diagnostic: "pulse",
-      deliverables: "package",
-    };
+  private entryItem(entry: FeedEntry): vscode.TreeItem {
+    // Category tag prefix (5.1) + expandable row (5.2 — click to drill down).
+    const item = new vscode.TreeItem(
+      `[${typeTag(entry.type)}] ${entry.headline}`,
+      vscode.TreeItemCollapsibleState.Collapsed
+    );
     const stale = model.isStale(entry, Date.now(), STALE_MS);
     const highlight = isHighPriority(entry) && !entry.seen && !entry.superseded;
     item.iconPath = new vscode.ThemeIcon(
-      iconId[entry.type] ?? "note",
+      TYPE_ICON[entry.type] ?? "note",
       highlight ? new vscode.ThemeColor("charts.orange") : undefined
     );
-
     const rel = relativeTime(entry.timestamp);
-    const tags = [entry.type, rel];
+    const bits = [rel];
     if (entry.superseded) {
-      tags.push("superseded");
+      bits.push("superseded");
     } else if (stale) {
-      tags.push("stale");
+      bits.push("stale");
     }
-    item.description = tags.join(" · ");
+    item.description = bits.join(" · ");
+    item.contextValue = "sidekickFinding";
 
     const md = new vscode.MarkdownString();
-    md.appendMarkdown(`**${entry.headline}**\n\n`);
+    md.appendMarkdown(`**[${typeTag(entry.type)}]** ${entry.headline}\n\n`);
     if (entry.rationale) {
       md.appendMarkdown(`_${entry.rationale}_\n\n`);
     }
-    if (entry.source) {
-      md.appendMarkdown(`[Open source](${entry.source})\n\n`);
-    }
-    if (entry.file) {
-      md.appendMarkdown(`File: \`${entry.file}\`\n\n`);
-    }
-    md.appendMarkdown(`priority: ${entry.priority} · ${rel}`);
+    md.appendMarkdown(`priority: ${entry.priority} · ${entry.confidence} · ${rel}`);
     item.tooltip = md;
+    // No command on the row: clicking expands it to reveal details (5.2 / 2c).
+    return item;
+  }
 
-    // Click → open the most useful target for this finding.
-    if (entry.source && /^https?:\/\//.test(entry.source)) {
+  private detailItem(node: DetailNode): vscode.TreeItem {
+    const label = node.label ? `${node.label}: ${node.value}` : node.value;
+    const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+    item.tooltip = node.value;
+    if (node.url && /^https?:\/\//.test(node.url)) {
+      item.iconPath = new vscode.ThemeIcon("link-external");
       item.command = {
         command: "vscode.open",
         title: "Open Source",
-        arguments: [vscode.Uri.parse(entry.source)],
+        arguments: [vscode.Uri.parse(node.url)],
       };
-    } else if (entry.file) {
+    } else if (node.file) {
+      item.iconPath = new vscode.ThemeIcon("file");
       item.command = {
         command: "vscode.open",
         title: "Open File",
-        arguments: [vscode.Uri.file(entry.file)],
+        arguments: [vscode.Uri.file(node.file)],
       };
-    } else {
+    } else if (node.chat) {
+      item.iconPath = new vscode.ThemeIcon("comment-discussion");
       item.command = {
         command: "sidekick-notify.showStatus",
         title: "View in Chat",
       };
+    } else {
+      item.iconPath = new vscode.ThemeIcon("info");
     }
     return item;
   }
 
-  getChildren(): FeedEntry[] {
-    return model.entries;
+  getChildren(node?: FeedNode): FeedNode[] {
+    if (!node) {
+      return model.entries;
+    }
+    if (isDetail(node)) {
+      return [];
+    }
+    return detailNodes(node);
   }
 }
 
@@ -176,7 +199,11 @@ function poll(): void {
   }
 
   if (stat.size < lastSize) {
-    lastSize = 0; // file truncated (new session) — reset
+    // File truncated / rotated (new session) — reset and clear the old feed.
+    lastSize = 0;
+    model.clear();
+    feedProvider.refresh();
+    updateBadge();
   }
   if (stat.size <= lastSize) {
     return; // no new data

@@ -456,6 +456,23 @@ stt_corrections (Phase 5f, already built) are unused** on this profile.
    Dayforce, workspace, CI/CD) + `stt_corrections:` for the P6 mishears.
 4. Optionally `answer_tier: deep` (Phase 4) for higher-accuracy answers.
 
+### Config decisions (08 Jul 2026, applied)
+- **STT model** — keep **`small.en`**; benchmark showed `distil-large-v3` runs
+  at ~1.8× real-time on the ARM64/CPU box (not viable live). Revisit only with a
+  CUDA GPU. A model change is *not* the fix for mishears.
+- **`glossary` over `stt_corrections`.** `glossary` seeds Whisper's vocabulary
+  prior so terms are recognised *at source* (prevention) — not a hardcoded
+  find/replace. `stt_corrections` is reserved for stubborn homophones only; not
+  used for MoJ. Applied MoJ glossary: Azure DevOps, ADO, OneLake, Dataverse,
+  Databricks, Synapse, Copilot, Microsoft Fabric, Dynamics 365 Finance &
+  Operations, SSRS, ADLS Gen2, WCAG, FUAM. (F&O expanded to the full product
+  name; "Dayforce" excluded pending confirmation it is a real system.)
+- **`objectives` are not per-call.** Default is **auto-inference** from the
+  opening minutes (Phase 1 / A2). `add_context "goal: …"` or a profile
+  `objectives:` list are optional, not required. Kept the MoJ profile light
+  (no objectives) to avoid config burden.
+- **`accuracy_mode: true`** enabled on the MoJ profile.
+
 ## Phase 5 — Feed UX & session hygiene (extension + small Python)
 - **5.1 Category tags + legend.** Prefix each feed row with a short type tag
   (`[research]`, `[sizing]`, `[roadmap]`, `[action]`, `[deliverable]`) beside the

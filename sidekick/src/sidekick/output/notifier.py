@@ -32,6 +32,40 @@ def _default_alerts_dir() -> Path:
     return Path.home().joinpath(*_ALERTS_SUBPATH)
 
 
+def _stable_id(action_type: str, question: str) -> str:
+    """Feed key that stays stable across enrichment (Phase 5 / 5.4).
+
+    Re-research wraps the question as ``[ENRICHED] <q> (previous answer: …)``;
+    stripping that wrapper keeps the ``id`` equal to the original so the feed
+    supersedes the row in place instead of stacking duplicates.
+    """
+    q = (question or "").strip()
+    if q.startswith("[ENRICHED] "):
+        q = q[len("[ENRICHED] "):]
+    idx = q.rfind(" (previous answer:")
+    if idx != -1:
+        q = q[:idx]
+    return f"{action_type}:{q.strip()[:40]}"
+
+
+def rotate_alerts(alerts_dir: Path | None = None) -> None:
+    """Archive the current alerts.jsonl at session start (Phase 5 / 5.3).
+
+    Keeps the live feed scoped to the current meeting and stops the file
+    growing without bound. The prior file is moved to ``live/archive/``.
+    """
+    target_dir = alerts_dir if alerts_dir is not None else _default_alerts_dir()
+    alerts_file = target_dir / "alerts.jsonl"
+    try:
+        if alerts_file.exists() and alerts_file.stat().st_size > 0:
+            archive_dir = target_dir / "archive"
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            alerts_file.replace(archive_dir / f"alerts_{ts}.jsonl")
+    except Exception:
+        logger.debug("Failed to rotate alerts file", exc_info=True)
+
+
 def _one_line_answer(result, limit: int = _ANSWER_MAX_CHARS) -> str:
     """Derive a single-line answer for the toast from ``result.answer``.
 
@@ -125,8 +159,10 @@ def write_alert(result, alerts_dir: Path | None = None) -> None:
             "source": _first_source_url(result),
             "confidence": getattr(result, "confidence", "medium"),
             "priority": getattr(result, "priority", "medium"),
-            # Stable key for feed supersede/dedup (matches QueueItem.id shape).
-            "id": f"{result.action_type}:{(getattr(result, 'question', '') or '')[:40]}",
+            # Stable key for feed supersede/dedup (survives enrichment).
+            "id": _stable_id(
+                result.action_type, getattr(result, "question", "") or ""
+            ),
             "rationale": getattr(result, "rationale", "") or "",
             "thread_id": getattr(result, "thread_id", "") or "",
         }

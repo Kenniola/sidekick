@@ -281,6 +281,10 @@ async def listen(config: str = "default", confirmed: bool = False) -> str:
 
     _init_session(config)
 
+    # Archive any prior session's live alerts so the feed starts clean for this
+    # meeting and the alerts file cannot grow unbounded (Phase 5 / 5.3).
+    notifier.rotate_alerts()
+
     backend_label = "Whisper (local)"
 
     # Enumerate loopback devices (pyaudiowpatch is pre-imported at module

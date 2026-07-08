@@ -8,6 +8,8 @@ import {
   alertKey,
   isHighPriority,
   headlineOf,
+  typeTag,
+  detailNodes,
   Alert,
 } from "./feedModel";
 
@@ -114,4 +116,46 @@ test("entries are capped to avoid unbounded growth", () => {
     m.addAlert(mkAlert({ id: `k${i}` }));
   }
   assert.ok(m.entries.length <= 200);
+});
+
+test("typeTag maps known types, falls back to the raw type", () => {
+  assert.strictEqual(typeTag("research"), "research");
+  assert.strictEqual(typeTag("action_item"), "action");
+  assert.strictEqual(typeTag("prototype"), "proto");
+  assert.strictEqual(typeTag("mystery"), "mystery");
+});
+
+test("detailNodes includes present fields and a chat action", () => {
+  const m = new FeedModel();
+  const { entry } = m.addAlert(
+    mkAlert({
+      rationale: "why it matters",
+      source: "https://x",
+      file: "C:/a.md",
+      priority: "high",
+      confidence: "high",
+    }),
+  );
+  const nodes = detailNodes(entry);
+  assert.ok(nodes.some((n) => n.label === "Why"));
+  assert.ok(nodes.some((n) => n.url === "https://x"));
+  assert.ok(nodes.some((n) => n.file === "C:/a.md"));
+  assert.ok(nodes.some((n) => n.chat === true));
+});
+
+test("detailNodes omits absent optional fields", () => {
+  const m = new FeedModel();
+  const { entry } = m.addAlert(mkAlert({}));
+  const nodes = detailNodes(entry);
+  assert.ok(!nodes.some((n) => n.label === "Why"));
+  assert.ok(!nodes.some((n) => n.url));
+  assert.ok(!nodes.some((n) => n.file));
+});
+
+test("clear empties the feed", () => {
+  const m = new FeedModel();
+  m.addAlert(mkAlert({ id: "a" }));
+  m.addAlert(mkAlert({ id: "b" }));
+  m.clear();
+  assert.strictEqual(m.entries.length, 0);
 });

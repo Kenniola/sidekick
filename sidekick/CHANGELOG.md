@@ -7,6 +7,21 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 5 (accuracy spec) — feed UX & session hygiene.** Acts on the MoJ
+  08-Jul test feedback (`sidekick-notify` v0.5.0).
+  - **Category tags + drill-down (5.1/5.2).** Feed rows now show a `[type]` tag
+    beside the icon and are **expandable** — click a finding to reveal its
+    rationale, source (clickable), file, priority/confidence, and a "View in
+    Chat" action, instead of the old generic status jump.
+  - **Session hygiene (5.3).** `listen` archives the prior `alerts.jsonl` to
+    `live/archive/` (`notifier.rotate_alerts`), so each meeting starts with a
+    clean feed and the file can't grow unbounded; the extension clears the feed
+    on the new session. (`tests/test_notifier.py`)
+  - **Stable enrichment id (5.4).** `notifier._stable_id` strips the
+    `[ENRICHED] … (previous answer: …)` wrapper so re-research supersedes the
+    original feed row instead of stacking duplicates. (`tests/test_notifier.py`)
+  - Pure feed logic (`typeTag`, `detailNodes`, `clear`) covered by
+    `node --test` (15 cases).
 - **Phase 4 (accuracy spec) — deep-default answers + self-critique.** Trades
   latency for answer accuracy; both opt-in.
   - **Deep-answer routing (A3).** `sensitivity.answer_tier: "deep"` (and, by
