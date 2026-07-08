@@ -7,6 +7,28 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 8 (accuracy spec) — research quality + feed clarity.** Acts on the
+  second MoJ test.
+  - **Relevance-aware source ranking (8.1).** Web hits are now scored by topical
+    relevance *and* source trust, so an off-topic high-trust page (e.g. a stray
+    `learn.microsoft.com` Cosmos DB result for a Terraform question) is demoted
+    below an on-topic one, and a relevant reputable non-Microsoft source can
+    outrank an off-topic Microsoft page. (`tests/test_research_routing.py`)
+  - **Extended verified sources (8.2).** Added HashiCorp/Terraform and other
+    reputable technical hosts to the trust map + routing (Microsoft still
+    outranks by trust). *Non-Microsoft results require a web-search key
+    (`TAVILY_API_KEY`/`BRAVE_API_KEY`) — Microsoft Learn alone only returns
+    Microsoft content.*
+  - **Relevance-floored citations (8.3).** Only sources clearing a relevance
+    floor are cited, so a weakly-matched URL is dropped rather than surfaced as
+    a wrong citation.
+  - **Real confidence (8.4).** The research result's confidence is now parsed
+    from the model's stated HIGH/MEDIUM/LOW instead of a hardcoded "medium".
+  - **Feed clarity (8.5/8.6).** Feed rows now lead with the **question**; the
+    drill-down shows the **full answer** (untruncated, in the hover), rationale,
+    source, and real confidence; and **"Research in Chat"** opens the finding as
+    `@sidekick research <question>` instead of the generic status.
+    (`sidekick-notify` v0.6.0)
 - **Phase 7 (accuracy spec) — LLM speaker-naming.** A best-effort, post-call
   pass attributes transcript lines to named participants using conversational
   cues (self-introductions, direct address, turn-taking) from the roster

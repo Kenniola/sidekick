@@ -8,6 +8,7 @@ export interface Alert {
   type: string;
   summary: string;
   answer?: string;
+  answer_full?: string;
   source?: string;
   file?: string;
   confidence: string;
@@ -25,6 +26,8 @@ export interface FeedEntry {
   priority: string;
   confidence: string;
   headline: string;
+  answer: string;
+  answerFull: string;
   rationale: string;
   source: string;
   file: string;
@@ -41,6 +44,7 @@ export interface DetailNode {
   url?: string;
   file?: string;
   chat?: boolean;
+  question?: string;
 }
 
 // Short category tags shown beside the icon (Phase 5 / 5.1).
@@ -61,6 +65,9 @@ export function typeTag(type: string): string {
 /** Build the expandable detail rows for a finding (pure — no vscode). */
 export function detailNodes(entry: FeedEntry): DetailNode[] {
   const nodes: DetailNode[] = [];
+  if (entry.answerFull) {
+    nodes.push({ kind: "detail", label: "Answer", value: entry.answerFull });
+  }
   if (entry.rationale) {
     nodes.push({ kind: "detail", label: "Why", value: entry.rationale });
   }
@@ -75,7 +82,13 @@ export function detailNodes(entry: FeedEntry): DetailNode[] {
     label: "Meta",
     value: `${entry.priority} priority · ${entry.confidence} confidence`,
   });
-  nodes.push({ kind: "detail", label: "", value: "View in Chat", chat: true });
+  nodes.push({
+    kind: "detail",
+    label: "",
+    value: "Research in Chat",
+    chat: true,
+    question: entry.headline,
+  });
   return nodes;
 }
 
@@ -99,6 +112,11 @@ export function headlineOf(alert: Alert): string {
   return answer || alert.summary || "(finding)";
 }
 
+/** The question a finding is answering — the feed row leads with this (8.5). */
+export function questionOf(alert: Alert): string {
+  return (alert.summary || "").trim() || headlineOf(alert);
+}
+
 export class FeedModel {
   entries: FeedEntry[] = [];
 
@@ -115,7 +133,9 @@ export class FeedModel {
       type: alert.type,
       priority: alert.priority || "medium",
       confidence: alert.confidence || "medium",
-      headline: headlineOf(alert),
+      headline: questionOf(alert),
+      answer: headlineOf(alert),
+      answerFull: (alert.answer_full || alert.answer || "").trim(),
       rationale: (alert.rationale || "").trim(),
       source: alert.source || "",
       file: alert.file || "",

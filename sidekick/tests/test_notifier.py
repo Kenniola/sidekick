@@ -63,6 +63,18 @@ class TestWriteAlert:
         assert record["rationale"] == "ties to sizing goal"
         assert record["thread_id"] == ""
 
+    def test_full_answer_carried(self, tmp_path):
+        result = _FakeResult(
+            action_type="research",
+            question="How to size?",
+            answer="Start at F64 and monitor CU consumption over a rolling window.",
+        )
+        notifier.write_alert(result, alerts_dir=tmp_path)
+        record = json.loads(
+            (tmp_path / "alerts.jsonl").read_text(encoding="utf-8").strip()
+        )
+        assert record["answer_full"].startswith("Start at F64 and monitor CU")
+
     def test_appends_multiple(self, tmp_path):
         notifier.write_alert(_FakeResult(question="Q1"), alerts_dir=tmp_path)
         notifier.write_alert(_FakeResult(question="Q2"), alerts_dir=tmp_path)

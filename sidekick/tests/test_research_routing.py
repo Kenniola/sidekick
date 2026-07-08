@@ -3,7 +3,16 @@
 import pytest
 
 from sidekick.actions import research as research_mod
-from sidekick.actions.research import ResearchPipeline, _WebHit
+from sidekick.actions.research import (
+    ResearchPipeline,
+    _parse_confidence,
+    _relevance,
+    _WebHit,
+)
+
+
+def _h(url, title="t", snippet="s"):
+    return _WebHit(title=title, url=url, snippet=snippet, source_label="Web")
 
 
 def _hit(url: str, title: str = "t") -> _WebHit:
@@ -81,8 +90,80 @@ def test_extra_trusted_domains_extends_map():
     assert len(ranked) == 1
 
 
-class TestSelfCritique:
-    """Phase 4 / A3: draft -> critique -> refine, degrading to the draft."""
+class TestRelevanceRanking:
+    """Phase 8 / 8.1: topical relevance demotes off-topic high-trust pages."""
+
+    def test_relevance_scoring(self):
+        assert _relevance(
+            "terraform fabric provider",
+            "Terraform Fabric provider",
+            "manage fabric with terraform",
+        ) > 0.5
+        assert _relevance(
+            "terraform fabric provider", "Cosmos DB overview", "azure cosmos database"
+        ) == 0.0
+
+    def test_on_topic_beats_off_topic_same_trust(self):
+        p = ResearchPipeline()
+        hits = [
+            _h(
+                "https://learn.microsoft.com/azure/cosmos-db/overview",
+                title="Cosmos DB overview",
+                snippet="azure cosmos database",
+            ),
+            _h(
+                "https://learn.microsoft.com/fabric/cicd/git-integration",
+                title="Fabric Git integration for CI/CD",
+                snippet="connect fabric workspaces to git for ci cd",
+            ),
+        ]
+        ranked = p._rank_hits(hits, domains=None, query="fabric git integration ci cd")
+        assert ranked[0].url.endswith("git-integration")
+
+    def test_relevant_nonms_beats_off_topic_ms(self):
+        p = ResearchPipeline()
+        hits = [
+            _h(
+                "https://learn.microsoft.com/azure/cosmos-db/overview",
+                title="Cosmos DB",
+                snippet="nosql database",
+            ),
+            _h(
+                "https://registry.terraform.io/providers/microsoft/fabric",
+                title="Fabric Terraform provider resources",
+                snippet="terraform provider to manage fabric resources",
+            ),
+        ]
+        ranked = p._rank_hits(
+            hits, domains=["Terraform"], query="fabric terraform provider resources"
+        )
+        assert ranked[0].url.startswith("https://registry.terraform.io")
+
+    def test_relevance_recorded_on_hit(self):
+        p = ResearchPipeline()
+        hit = _h(
+            "https://learn.microsoft.com/fabric/onelake",
+            title="OneLake overview",
+            snippet="onelake storage",
+        )
+        ranked = p._rank_hits([hit], domains=None, query="onelake storage")
+        assert ranked[0].relevance > 0.0
+
+
+class TestParseConfidence:
+    """Phase 8 / 8.4: read the model's stated confidence instead of hardcoding."""
+
+    def test_reads_stated_high(self):
+        assert _parse_confidence("...\nConfidence: HIGH\n...", True) == "high"
+
+    def test_reads_bold_low(self):
+        assert _parse_confidence("blah **Confidence: LOW**", True) == "low"
+
+    def test_fallback_no_sources_is_low(self):
+        assert _parse_confidence("no statement here", False) == "low"
+
+    def test_fallback_with_sources_is_medium(self):
+        assert _parse_confidence("no statement here", True) == "medium"
 
     @pytest.mark.asyncio
     async def test_refines_the_draft(self, monkeypatch):

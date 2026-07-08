@@ -83,9 +83,12 @@ class SidekickFeedProvider implements vscode.TreeDataProvider<FeedNode> {
   }
 
   private detailItem(node: DetailNode): vscode.TreeItem {
-    const label = node.label ? `${node.label}: ${node.value}` : node.value;
+    const shortVal =
+      node.value.length > 90 ? node.value.slice(0, 90) + "\u2026" : node.value;
+    const label = node.label ? `${node.label}: ${shortVal}` : shortVal;
     const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-    item.tooltip = node.value;
+    // Full value (may be a multi-paragraph answer) shown on hover as markdown.
+    item.tooltip = new vscode.MarkdownString(node.value);
     if (node.url && /^https?:\/\//.test(node.url)) {
       item.iconPath = new vscode.ThemeIcon("link-external");
       item.command = {
@@ -103,8 +106,9 @@ class SidekickFeedProvider implements vscode.TreeDataProvider<FeedNode> {
     } else if (node.chat) {
       item.iconPath = new vscode.ThemeIcon("comment-discussion");
       item.command = {
-        command: "sidekick-notify.showStatus",
-        title: "View in Chat",
+        command: "sidekick-notify.researchInChat",
+        title: "Research in Chat",
+        arguments: [node],
       };
     } else {
       item.iconPath = new vscode.ThemeIcon("info");
@@ -169,7 +173,17 @@ export function activate(ctx: vscode.ExtensionContext): void {
       model.markAllSeen();
       feedProvider.refresh();
       updateBadge();
-    })
+    }),
+    vscode.commands.registerCommand(
+      "sidekick-notify.researchInChat",
+      (node?: DetailNode) => {
+        const q = (node?.question || "").trim();
+        vscode.commands.executeCommand("workbench.action.chat.open", {
+          query: q ? `@sidekick research ${q}` : "@sidekick status",
+          isPartialQuery: false,
+        });
+      }
+    )
   );
 
   pollTimer = setInterval(poll, POLL_MS);

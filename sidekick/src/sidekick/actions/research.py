@@ -87,6 +87,7 @@ class _WebHit:
     snippet: str = ""
     source_label: str = "Web"
     score: float = 0.0
+    relevance: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +113,13 @@ _SOURCE_TRUST: dict[str, float] = {
     "docs.aws.amazon.com": 60.0,
     "aws.amazon.com": 50.0,
     "postgresql.org": 60.0,
+    # Reputable non-Microsoft technical sources (Phase 8 / 8.2). Microsoft still
+    # outranks these by trust; they surface when on-topic and MS has no match.
+    "registry.terraform.io": 70.0,
+    "developer.hashicorp.com": 70.0,
+    "hashicorp.com": 55.0,
+    "kubernetes.io": 55.0,
+    "python.org": 55.0,
 }
 
 # Boost added to a result when its host is a preferred source for one of the
@@ -119,6 +127,58 @@ _SOURCE_TRUST: dict[str, float] = {
 # lifts AWS docs above their baseline so they can rank alongside Microsoft docs,
 # without ever suppressing Microsoft sources when they are relevant.
 _ROUTING_BOOST = 45.0
+
+# Weight applied to topical relevance in ranking (Phase 8 / 8.1) so an off-topic
+# high-trust page (e.g. a stray learn.microsoft.com result) is demoted below an
+# on-topic one, and a relevant reputable non-Microsoft source can outrank an
+# off-topic Microsoft page.
+_RELEVANCE_WEIGHT = 80.0
+# A source must clear this relevance floor to be cited, so a weakly-matched URL
+# is dropped rather than surfaced as a wrong citation (8.3).
+_SOURCE_RELEVANCE_FLOOR = 0.2
+_MAX_SOURCES = 5
+
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "of", "to", "for", "in", "on", "at", "by", "is", "are",
+    "be", "do", "does", "can", "could", "would", "should", "how", "what",
+    "which", "who", "when", "we", "you", "it", "this", "that", "with", "your",
+    "our", "and", "or", "as", "if", "so", "about", "into", "from", "use",
+    "using", "need", "want",
+})
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        w
+        for w in re.findall(r"[a-z0-9]{3,}", (text or "").lower())
+        if w not in _STOP_WORDS
+    }
+
+
+def _relevance(query: str, title: str, snippet: str) -> float:
+    """Fraction of the query's content words present in a hit's title+snippet."""
+    q = _content_words(query)
+    if not q:
+        return 0.0
+    text = f"{title} {snippet}".lower()
+    return sum(1 for w in q if w in text) / len(q)
+
+
+_CONFIDENCE_RE = re.compile(r"confidence[:*\s]+\**\s*(HIGH|MEDIUM|LOW)", re.IGNORECASE)
+
+
+def _parse_confidence(answer: str, has_sources: bool) -> str:
+    """Read the answer's stated confidence (HIGH/MEDIUM/LOW), else infer it.
+
+    The synthesis prompt asks the model to state confidence; honouring it means
+    the feed shows real confidence instead of a hardcoded 'medium' (8.4).
+    """
+    m = _CONFIDENCE_RE.search(answer or "")
+    if m:
+        return m.group(1).lower()
+    if not has_sources:
+        return "low"
+    return "medium"
 
 # Detected-domain keyword (substring, lowercased) -> preferred host families.
 # Matched against the domain labels already detected/configured upstream
@@ -133,6 +193,10 @@ _DOMAIN_ROUTING: dict[str, list[str]] = {
     "fabric": ["learn.microsoft.com", "blog.fabric.microsoft.com", "roadmap.fabric.microsoft.com"],
     "power bi": ["learn.microsoft.com", "blog.fabric.microsoft.com"],
     "azure": ["learn.microsoft.com", "azure.microsoft.com"],
+    "terraform": [
+        "registry.terraform.io", "developer.hashicorp.com", "hashicorp.com",
+        "learn.microsoft.com",
+    ],
 }
 
 
@@ -196,7 +260,7 @@ class ResearchPipeline:
 
         # Gather live web context from MS Learn and verified sources,
         # ranked with per-domain source routing.
-        web_context = await self._search_web(search_query, domains)
+        web_context, ranked_hits = await self._search_web(search_query, domains)
 
         # Build customer engagement context
         customer_block = ""
@@ -272,14 +336,17 @@ Cite the URLs from web results where they support your answer."""
                 tier=tier,
             )
 
-        # Extract source URLs from web results for the ResearchResult
-        sources = self._extract_urls(web_context)
+        # Only cite sources that clear the relevance floor, so a weakly-matched
+        # (often off-topic) URL is dropped rather than surfaced (Phase 8 / 8.3).
+        sources = [
+            h.url for h in ranked_hits if h.relevance >= _SOURCE_RELEVANCE_FLOOR
+        ][:_MAX_SOURCES]
 
         return ResearchResult(
             question=question,
             answer=answer,
             sources=sources,
-            confidence="medium",
+            confidence=_parse_confidence(answer, bool(sources)),
         )
 
     async def _synthesise_streaming(
@@ -491,7 +558,9 @@ Cite the URLs from web results where they support your answer."""
         facts = getattr(context, "key_facts", [])
         return "\n".join(f"- {f}" for f in facts) if facts else "(no key facts yet)"
 
-    async def _search_web(self, question: str, domains: list[str] | None = None) -> str:
+    async def _search_web(
+        self, question: str, domains: list[str] | None = None,
+    ) -> tuple[str, list[_WebHit]]:
         """Search verified sources and rank them with per-domain routing.
 
         Two live layers feed a single ranker:
@@ -519,11 +588,14 @@ Cite the URLs from web results where they support your answer."""
         except Exception as e:
             logger.warning("Web provider search failed: %s", e)
 
-        ranked = self._rank_hits(hits, domains)
+        ranked = self._rank_hits(hits, domains, query=question)
         if not ranked:
-            return "(no verified web results — LLM will use training knowledge)"
+            return (
+                "(no verified web results — LLM will use training knowledge)",
+                [],
+            )
 
-        return "\n\n".join(self._format_hit(h) for h in ranked[:8])
+        return "\n\n".join(self._format_hit(h) for h in ranked[:8]), ranked
 
     # ----- ranking & source verification -----
 
@@ -550,9 +622,10 @@ Cite the URLs from web results where they support your answer."""
         return preferred
 
     def _rank_hits(
-        self, hits: list[_WebHit], domains: list[str] | None,
+        self, hits: list[_WebHit], domains: list[str] | None, query: str = "",
     ) -> list[_WebHit]:
-        """Filter to verified sources, score with domain routing, dedupe, sort."""
+        """Filter to verified sources, score with domain routing + topical
+        relevance, dedupe, sort."""
         routing = self._routing_hosts(domains)
         scored: list[_WebHit] = []
         seen: set[str] = set()
@@ -567,7 +640,11 @@ Cite the URLs from web results where they support your answer."""
             in_route = any(
                 host == r or host.endswith("." + r) for r in routing
             )
-            h.score = base + (_ROUTING_BOOST if in_route else 0.0)
+            rel = _relevance(query, h.title, h.snippet) if query else 0.0
+            h.relevance = rel
+            h.score = (
+                base + _RELEVANCE_WEIGHT * rel + (_ROUTING_BOOST if in_route else 0.0)
+            )
             seen.add(url)
             scored.append(h)
         scored.sort(key=lambda x: x.score, reverse=True)

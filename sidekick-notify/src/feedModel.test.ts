@@ -8,6 +8,7 @@ import {
   alertKey,
   isHighPriority,
   headlineOf,
+  questionOf,
   typeTag,
   detailNodes,
   Alert,
@@ -59,7 +60,29 @@ test("addAlert supersedes same-key entry in place (dedup)", () => {
   const r = m.addAlert(mkAlert({ id: "a", answer: "second" }));
   assert.strictEqual(r.isNew, false);
   assert.strictEqual(m.entries.length, 1);
-  assert.strictEqual(m.entries[0].headline, "second");
+  assert.strictEqual(m.entries[0].answer, "second");
+});
+
+test("feed row leads with the question, keeps the full answer", () => {
+  const m = new FeedModel();
+  const { entry } = m.addAlert(
+    mkAlert({
+      summary: "How do I size F64?",
+      answer: "Start at F64...",
+      answer_full: "Start at F64 and monitor CU. Sources: ...",
+    }),
+  );
+  assert.strictEqual(entry.headline, "How do I size F64?");
+  assert.strictEqual(entry.answer, "Start at F64...");
+  assert.ok(entry.answerFull.startsWith("Start at F64 and monitor"));
+});
+
+test("questionOf prefers summary, falls back to answer", () => {
+  assert.strictEqual(questionOf(mkAlert({ summary: "Q?" })), "Q?");
+  assert.strictEqual(
+    questionOf(mkAlert({ summary: "", answer: "A" })),
+    "A",
+  );
 });
 
 test("newer thread entry supersedes older ones on the same thread", () => {
@@ -129,6 +152,9 @@ test("detailNodes includes present fields and a chat action", () => {
   const m = new FeedModel();
   const { entry } = m.addAlert(
     mkAlert({
+      summary: "How do I size F64?",
+      answer: "Start at F64.",
+      answer_full: "Start at F64 and monitor CU.",
       rationale: "why it matters",
       source: "https://x",
       file: "C:/a.md",
@@ -137,10 +163,11 @@ test("detailNodes includes present fields and a chat action", () => {
     }),
   );
   const nodes = detailNodes(entry);
+  assert.ok(nodes.some((n) => n.label === "Answer" && n.value.includes("monitor CU")));
   assert.ok(nodes.some((n) => n.label === "Why"));
   assert.ok(nodes.some((n) => n.url === "https://x"));
   assert.ok(nodes.some((n) => n.file === "C:/a.md"));
-  assert.ok(nodes.some((n) => n.chat === true));
+  assert.ok(nodes.some((n) => n.chat === true && n.question === "How do I size F64?"));
 });
 
 test("detailNodes omits absent optional fields", () => {
