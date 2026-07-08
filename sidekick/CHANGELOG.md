@@ -7,6 +7,13 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 9.1 (accuracy spec) — keyless web search.** DuckDuckGo (`ddgs`) is now
+  the default web-search provider, so **non-Microsoft results work with no API
+  key and no user setup** (a Tavily/Brave key, per-user or a shared org key,
+  still takes precedence when present). Results pass through the existing
+  verified-source trust map + relevance ranking, so only reputable hosts
+  surface. Best-effort — degrades to Microsoft Learn + model knowledge on
+  rate-limit/failure. (`tests/test_research_routing.py`)
 - **Phase 8 (accuracy spec) — research quality + feed clarity.** Acts on the
   second MoJ test.
   - **Relevance-aware source ranking (8.1).** Web hits are now scored by topical

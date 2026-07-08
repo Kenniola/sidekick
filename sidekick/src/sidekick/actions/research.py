@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -710,12 +711,13 @@ Cite the URLs from web results where they support your answer."""
         return not any(p in path_lower for p in reject_patterns)
 
     async def _search_provider(self, question: str) -> list[_WebHit]:
-        """Query a general web-search provider, if one is configured.
+        """Query a web-search provider — a keyed one if configured, else keyless.
 
-        The provider is chosen by which API key is present; with no key this
-        layer is simply skipped (MS Learn still runs). Provider results are not
-        trusted here — they pass through the same verified-source ranker as every
-        other hit, so non-allowlisted hosts are dropped regardless.
+        Precedence (Phase 9 / 9.1): a Tavily or Brave key (per-user or a shared
+        org key) wins for reliability; otherwise DuckDuckGo runs **keyless** so
+        non-Microsoft results work out of the box with no user configuration.
+        Every hit still passes through the verified-source ranker, so only
+        trusted hosts are ever surfaced.
         """
         tavily_key = os.environ.get("TAVILY_API_KEY", "")
         if tavily_key:
@@ -723,7 +725,43 @@ Cite the URLs from web results where they support your answer."""
         brave_key = os.environ.get("BRAVE_API_KEY", "")
         if brave_key:
             return await self._search_brave(question, brave_key)
-        return []
+        # Keyless default — real non-Microsoft results with zero user setup.
+        return await self._search_duckduckgo(question)
+
+    async def _search_duckduckgo(self, question: str) -> list[_WebHit]:
+        """Keyless web search via DuckDuckGo (no API key). Best-effort.
+
+        Runs the blocking ``ddgs`` client off the event loop and degrades to an
+        empty list on any failure (rate-limit, missing package, network), so MS
+        Learn + model knowledge still answer.
+        """
+
+        def _blocking() -> list[_WebHit]:
+            try:
+                try:
+                    from ddgs import DDGS
+                except ImportError:
+                    from duckduckgo_search import DDGS  # older package name
+            except ImportError:
+                logger.debug("ddgs not installed; skipping keyless web search")
+                return []
+            out: list[_WebHit] = []
+            try:
+                with DDGS() as ddgs:
+                    for r in ddgs.text(question, max_results=8):
+                        title = r.get("title", "")
+                        url = r.get("href") or r.get("url") or ""
+                        body = str(r.get("body", ""))[:200]
+                        if title and url:
+                            out.append(_WebHit(
+                                title=title, url=url, snippet=body, source_label="Web",
+                            ))
+            except Exception as e:  # noqa: BLE001 — best-effort keyless search
+                logger.debug("DuckDuckGo search failed: %s", e)
+                return []
+            return out
+
+        return await asyncio.to_thread(_blocking)
 
     async def _search_tavily(self, question: str, api_key: str) -> list[_WebHit]:
         """Tavily Search API — https://api.tavily.com/search.

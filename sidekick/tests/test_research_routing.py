@@ -165,6 +165,67 @@ class TestParseConfidence:
     def test_fallback_with_sources_is_medium(self):
         assert _parse_confidence("no statement here", True) == "medium"
 
+
+class TestProviderPrecedence:
+    """Phase 9 / 9.1: keyed provider wins; else keyless DuckDuckGo default."""
+
+    @pytest.mark.asyncio
+    async def test_tavily_used_when_key_set(self, monkeypatch):
+        p = ResearchPipeline()
+        monkeypatch.setenv("TAVILY_API_KEY", "k")
+        called = {}
+
+        async def _fake_tav(q, key):
+            called["tav"] = key
+            return []
+
+        async def _fake_ddg(q):
+            called["ddg"] = True
+            return []
+
+        monkeypatch.setattr(p, "_search_tavily", _fake_tav)
+        monkeypatch.setattr(p, "_search_duckduckgo", _fake_ddg)
+        await p._search_provider("q")
+        assert called.get("tav") == "k"
+        assert "ddg" not in called
+
+    @pytest.mark.asyncio
+    async def test_duckduckgo_used_when_no_key(self, monkeypatch):
+        p = ResearchPipeline()
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("BRAVE_API_KEY", raising=False)
+        called = {}
+
+        async def _fake_ddg(q):
+            called["ddg"] = True
+            return []
+
+        monkeypatch.setattr(p, "_search_duckduckgo", _fake_ddg)
+        out = await p._search_provider("q")
+        assert called.get("ddg") is True
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_brave_used_before_duckduckgo(self, monkeypatch):
+        p = ResearchPipeline()
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setenv("BRAVE_API_KEY", "b")
+        called = {}
+
+        async def _fake_brave(q, key):
+            called["brave"] = key
+            return []
+
+        async def _fake_ddg(q):
+            called["ddg"] = True
+            return []
+
+        monkeypatch.setattr(p, "_search_brave", _fake_brave)
+        monkeypatch.setattr(p, "_search_duckduckgo", _fake_ddg)
+        await p._search_provider("q")
+        assert called.get("brave") == "b"
+        assert "ddg" not in called
+
     @pytest.mark.asyncio
     async def test_refines_the_draft(self, monkeypatch):
         async def _fake_llm(**kwargs):
