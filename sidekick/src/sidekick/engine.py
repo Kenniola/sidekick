@@ -262,11 +262,17 @@ async def _accumulate_and_maybe_adjudicate(
         state.config,
         getattr(state, "grounding_cache", None) or "",
         objectives=list(getattr(state.context, "objectives", None) or []),
+        already_surfaced=list(getattr(state, "surfaced_questions", None) or []),
     )
     state.pending_candidates = []
     state.last_adjudicate_time = time.monotonic()
     for item in surfaced:
         await state.queue.enqueue(item)
+    # Remember what we surfaced so later passes don't repeat it (keep last 40).
+    state.surfaced_questions.extend(
+        getattr(i, "question", "") for i in surfaced if getattr(i, "question", "")
+    )
+    del state.surfaced_questions[:-40]
 
 
 _SUGGEST_SYSTEM_PROMPT = (

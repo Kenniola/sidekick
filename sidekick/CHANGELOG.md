@@ -6,6 +6,19 @@ All notable changes to sidekick-copilot are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **Cross-pass duplicate findings.** The adjudicator now carries **session
+  memory** of questions already surfaced and suppresses re-asks even when
+  reworded/rescoped (e.g. the six "is there a Fabric-specific advantage to
+  GitHub over ADO" variants collapse to one). LLM semantic judgement plus a
+  lexical backstop; applies on the fallback path too. (`tests/test_adjudicator.py`)
+- **"Research in Chat" did nothing.** It opened the chat with an `@sidekick`
+  participant that doesn't exist (Sidekick is an MCP server, not a chat
+  participant), so the query failed. Now sends a clean, single-line research
+  instruction the agent acts on with the Sidekick research tool. (`sidekick-notify`)
+- **Auto-suggest (`[ask]`) not appearing.** Feature was correct but off by
+  default; enabled on the `moj` profile (`sensitivity.auto_suggest: true`).
+
 ### Added
 - **Phase 9.3 (accuracy spec) — proactive advisor (opt-in).** When
   `sensitivity.auto_suggest` is on, a slow-cadence background pass occasionally

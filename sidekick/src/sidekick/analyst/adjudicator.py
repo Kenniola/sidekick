@@ -18,6 +18,7 @@ from dataclasses import replace
 from typing import Awaitable, Callable
 
 from sidekick.analyst.classifier import ActionItem
+from sidekick.dedup import find_duplicate
 from sidekick.llm import call_llm, parse_llm_json
 from sidekick.prompt_budget import clip
 
@@ -38,6 +39,12 @@ engagement? Discard generically-interesting-but-off-goal items.
 2. REDUNDANCY — merge near-duplicates and refine verbose candidates into one \
 crisp, well-formed question. Preserve the client's exact system/product/team \
 names; never generalise specifics away.
+2b. SESSION MEMORY — you are given the questions ALREADY SURFACED earlier this \
+session. Do NOT surface any candidate that repeats or merely rephrases one of \
+them, even if the wording, scope, or emphasis differs slightly (e.g. "is there \
+an advantage to X" vs "what advantage does X give this project" are the SAME \
+question). The consultant has already seen that point — surface only a \
+genuinely NEW angle that adds information beyond what was already asked.
 3. VALUE — prefer questions that uncover the real problem, unstated \
 assumptions, risks, or that the consultant must answer to move forward.
 4. PRECISION over recall — it is better to surface 1 excellent item than 3 \
@@ -73,6 +80,31 @@ def _fallback_filter(
     return kept[:max_surfaced]
 
 
+# Lexical backstop for the LLM's semantic session-memory. Set below the strict
+# 0.8 dedup default so obvious rephrasings of an already-surfaced question are
+# still caught; the LLM handles the harder semantic cases.
+_SURFACED_DUP_THRESHOLD = 0.72
+
+
+def _drop_already_surfaced(
+    surfaced: list[ActionItem], already_surfaced: list[str] | None
+) -> list[ActionItem]:
+    """Drop items that lexically repeat a question surfaced earlier this session."""
+    if not already_surfaced:
+        return surfaced
+    out: list[ActionItem] = []
+    for item in surfaced:
+        if find_duplicate(
+            item.question, already_surfaced, threshold=_SURFACED_DUP_THRESHOLD
+        ) is not None:
+            logger.info(
+                "Suppressed already-surfaced (lexical): %s", item.question[:60]
+            )
+            continue
+        out.append(item)
+    return out
+
+
 def _candidate_block(candidates: list[ActionItem]) -> str:
     """Enumerate candidates for the prompt (index → question/type/score)."""
     lines = []
@@ -93,6 +125,7 @@ def _build_user_prompt(
     *,
     threshold: float,
     max_surfaced: int,
+    already_surfaced: list[str] | None = None,
 ) -> str:
     """Assemble the token-budgeted adjudication prompt."""
     customer = getattr(config, "customer", "the customer")
@@ -108,17 +141,25 @@ def _build_user_prompt(
     if hasattr(context, "format_recent_buffer"):
         buffer_block = context.format_recent_buffer()
     grounding_block = clip(grounding or "(none)", 4000, keep="head")
+    surfaced_block = (
+        "\n".join(f"- {q}" for q in (already_surfaced or [])[-40:])
+        if already_surfaced
+        else "(nothing yet)"
+    )
 
     return (
         f"Customer: {customer}\n\n"
         f"ENGAGEMENT OBJECTIVES:\n{objectives_block}\n\n"
+        f"ALREADY SURFACED THIS SESSION (do NOT repeat or rephrase these):\n"
+        f"{surfaced_block}\n\n"
         f"ACTIVE THREADS:\n{threads_block}\n\n"
         f"RECENT CONVERSATION:\n{clip(buffer_block or '(none)', 3000, keep='tail')}\n\n"
         f"TEAM STANDARDS / PAST-ENGAGEMENT GROUNDING:\n{grounding_block}\n\n"
         f"CANDIDATES (from the fast classifier):\n"
         f"{_candidate_block(candidates)}\n\n"
         f"Surface at most {max_surfaced} items. Omit anything below a "
-        f"priority_score of {threshold}. Return JSON only."
+        f"priority_score of {threshold}, and omit anything already surfaced "
+        f"this session. Return JSON only."
     )
 
 
@@ -173,13 +214,16 @@ async def adjudicate(
     grounding: str = "",
     *,
     objectives: list[str] | None = None,
+    already_surfaced: list[str] | None = None,
     llm_fn: LLMFn = call_llm,
 ) -> list[ActionItem]:
     """Select the few candidates genuinely worth surfacing (deep-tier pass).
 
     Returns a re-scored, de-duplicated, rationale-annotated subset capped at
     ``sensitivity.max_surfaced_per_pass`` and gated at
-    ``sensitivity.surface_threshold``. Falls back to a deterministic
+    ``sensitivity.surface_threshold``. Questions already surfaced this session
+    (``already_surfaced``) are suppressed — primarily by the LLM's semantic
+    judgement, with a lexical backstop. Falls back to a deterministic
     threshold+cap filter on any error.
     """
     if not candidates:
@@ -199,6 +243,7 @@ async def adjudicate(
             objectives,
             threshold=threshold,
             max_surfaced=max_surfaced,
+            already_surfaced=already_surfaced,
         )
         raw = await llm_fn(
             system_prompt=ADJUDICATOR_SYSTEM_PROMPT,
@@ -208,6 +253,7 @@ async def adjudicate(
             timeout=45.0,
         )
         surfaced = _parse_surfaced(raw, candidates, threshold, max_surfaced)
+        surfaced = _drop_already_surfaced(surfaced, already_surfaced)
         logger.info(
             "Adjudicated %d candidate(s) → %d surfaced", len(candidates), len(surfaced)
         )
@@ -216,4 +262,6 @@ async def adjudicate(
         logger.warning(
             "Adjudicator failed (%s); falling back to threshold filter", e
         )
-        return _fallback_filter(candidates, threshold, max_surfaced)
+        return _drop_already_surfaced(
+            _fallback_filter(candidates, threshold, max_surfaced), already_surfaced
+        )

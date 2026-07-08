@@ -153,6 +153,74 @@ class TestAdjudicate:
         assert [o.question for o in out] == ["high", "low"]
 
 
+class TestSessionMemory:
+    @pytest.mark.asyncio
+    async def test_already_surfaced_injected_into_prompt(self):
+        seen = {}
+
+        async def _capture(**kwargs):
+            seen["prompt"] = kwargs["user_prompt"]
+            return json.dumps({"surfaced": []})
+
+        await adj.adjudicate(
+            [_item("q0", 0.9)],
+            _context(),
+            _config(),
+            already_surfaced=["earlier GitHub-vs-ADO question"],
+            llm_fn=_capture,
+        )
+        assert "ALREADY SURFACED THIS SESSION" in seen["prompt"]
+        assert "earlier GitHub-vs-ADO question" in seen["prompt"]
+
+    @pytest.mark.asyncio
+    async def test_lexical_backstop_drops_repeat(self):
+        q = "Is there a concrete advantage to GitHub over ADO for this project"
+        candidates = [_item(q, 0.9)]
+        payload = {"surfaced": [{"index": 0, "question": q, "priority_score": 0.9}]}
+        out = await adj.adjudicate(
+            candidates,
+            _context(),
+            _config(),
+            already_surfaced=[q],
+            llm_fn=_llm_returning(payload),
+        )
+        assert out == []
+
+    @pytest.mark.asyncio
+    async def test_new_angle_not_dropped(self):
+        candidates = [_item("What is the Dataverse one-workspace limit?", 0.9)]
+        payload = {
+            "surfaced": [
+                {
+                    "index": 0,
+                    "question": "What is the Dataverse one-workspace limit?",
+                    "priority_score": 0.9,
+                }
+            ]
+        }
+        out = await adj.adjudicate(
+            candidates,
+            _context(),
+            _config(),
+            already_surfaced=["Is there a concrete advantage to GitHub over ADO?"],
+            llm_fn=_llm_returning(payload),
+        )
+        assert len(out) == 1
+
+    @pytest.mark.asyncio
+    async def test_backstop_applies_on_fallback_too(self):
+        q = "Concrete advantage to GitHub over ADO for this Fabric project"
+        candidates = [_item(q, 0.9)]
+        out = await adj.adjudicate(
+            candidates,
+            _context(),
+            _config(),
+            already_surfaced=[q],
+            llm_fn=_boom_llm,
+        )
+        assert out == []
+
+
 class TestFallback:
     @pytest.mark.asyncio
     async def test_llm_failure_falls_back_to_threshold_filter(self):

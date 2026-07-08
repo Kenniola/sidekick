@@ -184,9 +184,15 @@ export function activate(ctx: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       "sidekick-notify.researchInChat",
       (node?: DetailNode) => {
-        const q = (node?.question || "").trim();
+        // Clean to a single plain-text line — markdown/newlines in the chat
+        // query box behave badly. There is no "@sidekick" chat participant
+        // (Sidekick is an MCP server), so send a plain instruction the agent
+        // can act on with the Sidekick research tool it already has.
+        const q = stripMarkdown(node?.question || "").slice(0, 300);
         vscode.commands.executeCommand("workbench.action.chat.open", {
-          query: q ? `@sidekick research ${q}` : "@sidekick status",
+          query: q
+            ? `Research this question and answer with sources: ${q}`
+            : "Show me the latest Sidekick findings.",
           isPartialQuery: false,
         });
       }

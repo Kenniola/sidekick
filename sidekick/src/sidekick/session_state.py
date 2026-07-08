@@ -67,6 +67,10 @@ class SessionState:
     last_suggest_time: float = 0.0           # monotonic clock of last suggestion
     recent_suggestions: list = field(default_factory=list)
 
+    # Session memory of questions the adjudicator has already surfaced, so
+    # later passes don't re-surface the same point in different words.
+    surfaced_questions: list = field(default_factory=list)
+
     # Grounding context cache — avoids re-reading files on every call
     grounding_cache: str | None = None
     grounding_cache_time: float = 0.0
