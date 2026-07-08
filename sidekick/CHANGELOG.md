@@ -7,6 +7,18 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 9.3 (accuracy spec) — proactive advisor (opt-in).** When
+  `sensitivity.auto_suggest` is on, a slow-cadence background pass occasionally
+  surfaces **one** high-impact question to ask the client, shown in the feed as
+  an `[ask]` card (💡). Off by default so it never adds in-call noise; capped at
+  one suggestion per cadence, deduped against recent suggestions, and never
+  competes with research. (`tests/test_engine.py`)
+- **Phase 9.2 (accuracy spec) — feed prettify (extension).** Feed rows are now
+  **numbered**, have **markdown stripped** from their plain-text labels (no more
+  literal `**`/`##`), carry a **confidence tag** (HIGH/MED/LOW) and a
+  **confidence-coloured icon** (green/amber/red; unseen high-priority findings
+  keep the orange attention colour). Detail previews are cleaned too, with the
+  full markdown still available on hover. (`sidekick-notify`)
 - **Phase 9.1 (accuracy spec) — keyless web search.** DuckDuckGo (`ddgs`) is now
   the default web-search provider, so **non-Microsoft results work with no API
   key and no user setup** (a Tavily/Brave key, per-user or a shared org key,

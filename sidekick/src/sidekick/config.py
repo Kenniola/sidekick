@@ -70,6 +70,11 @@ class SensitivityConfig:
     surface_threshold: float = 0.7           # precision gate out of the pass
     answer_tier: str = "auto"                # "auto" | "deep" deep-model answers
     self_critique: bool = False              # draft->critique->refine (opt-in)
+    # Proactive advisor (Phase 9.3, opt-in). When on, a slow background pass
+    # occasionally suggests ONE high-impact question to ask the client, shown
+    # in the feed as an ``[ask]`` card. Off by default to avoid in-call noise.
+    auto_suggest: bool = False
+    auto_suggest_interval_seconds: int = 120  # min gap between suggestions
 
 
 @dataclass
@@ -511,6 +516,10 @@ def _parse_config(raw: dict) -> SidekickConfig:
             surface_threshold=sensitivity_raw.get("surface_threshold", 0.7),
             answer_tier=str(sensitivity_raw.get("answer_tier", "auto")).lower(),
             self_critique=_as_bool(sensitivity_raw.get("self_critique", False)),
+            auto_suggest=_as_bool(sensitivity_raw.get("auto_suggest", False)),
+            auto_suggest_interval_seconds=sensitivity_raw.get(
+                "auto_suggest_interval_seconds", 120
+            ),
         ),
         queue=QueueConfig(
             fast_lane_max=queue_raw.get("fast_lane_max", 3),

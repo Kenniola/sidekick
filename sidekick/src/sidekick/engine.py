@@ -124,6 +124,10 @@ async def classify_and_dispatch(
         if not getattr(result, "early_notified", False):
             notify(result)
 
+    # Proactive advisor (Phase 9.3): occasionally suggest a question to ask the
+    # client. Opt-in and slow-cadence, so it never competes with research.
+    await maybe_auto_suggest(state, notify)
+
     # Adapt the Whisper vocabulary prior (Phase 5b) from LLM-corrected text:
     # thread/context key_facts and research answers spell proper nouns
     # correctly even when Whisper misheard them, so feeding them back improves
@@ -263,6 +267,122 @@ async def _accumulate_and_maybe_adjudicate(
     state.last_adjudicate_time = time.monotonic()
     for item in surfaced:
         await state.queue.enqueue(item)
+
+
+_SUGGEST_SYSTEM_PROMPT = (
+    "You are a senior consulting advisor listening to a live client meeting. "
+    "Suggest at most ONE high-impact question the consultant should ask the "
+    "client right now to move the engagement forward. Only suggest when there "
+    "is a clear, valuable gap worth asking about; otherwise return an empty "
+    "question. Mirror the client's language; never rephrase into jargon. "
+    "Return JSON only."
+)
+
+
+async def _generate_suggestion(state: SessionState) -> dict | None:
+    """Fast-tier advisor pass: one question to ask the client, or None."""
+    from sidekick.llm import call_llm, parse_llm_json
+
+    ctx = state.context
+    recent = list(getattr(ctx, "full_transcript", []) or [])[-30:]
+    transcript_block = "\n".join(
+        f"{getattr(line, 'speaker', '?')}: {getattr(line, 'text', str(line))}"
+        for line in recent
+    )
+    objectives = ", ".join(getattr(ctx, "objectives", []) or []) or "(not yet known)"
+    already = (
+        "\n".join(f"- {q}" for q in state.recent_suggestions[-8:]) or "(none)"
+    )
+    user_prompt = (
+        f"Objectives: {objectives}\n\n"
+        f"Recent conversation:\n{transcript_block}\n\n"
+        f"Questions already suggested (do NOT repeat these or close variants):\n"
+        f"{already}\n\n"
+        'Return JSON: {"question": "<one question to ask the client, or an '
+        'empty string if none is worth asking right now>", '
+        '"rationale": "<one short line on why it matters>", '
+        '"impact": "high|medium|low"}'
+    )
+    raw = await asyncio.wait_for(
+        call_llm(
+            system_prompt=_SUGGEST_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            json_output=True,
+            timeout=20.0,
+            tier="fast",
+        ),
+        timeout=25.0,
+    )
+    data = parse_llm_json(raw)
+    question = str(data.get("question") or "").strip()
+    if not question:
+        return None
+    return {
+        "question": question,
+        "rationale": str(data.get("rationale") or "").strip(),
+        "impact": str(data.get("impact") or "medium").strip().lower(),
+    }
+
+
+async def maybe_auto_suggest(
+    state: SessionState, notify: Callable[[object], None]
+) -> None:
+    """Proactively surface a question to ask the client (Phase 9.3, opt-in).
+
+    Gated by ``sensitivity.auto_suggest`` (default off). Runs on a slow cadence
+    so it never competes with research for attention, generates at most one
+    suggestion per pass, dedupes against recent suggestions, and emits it as a
+    low-key ``suggestion`` finding. Best-effort — any failure is swallowed.
+    """
+    if not state.config or not state.context:
+        return
+    sens = getattr(state.config, "sensitivity", None)
+    if not getattr(sens, "auto_suggest", False):
+        return
+
+    # Need a few exchanges before advice is meaningful.
+    transcript = getattr(state.context, "full_transcript", []) or []
+    if len(transcript) < 6:
+        return
+
+    interval = float(getattr(sens, "auto_suggest_interval_seconds", 120) or 120)
+    now = time.monotonic()
+    # Arm the timer on the first eligible pass so we don't fire immediately.
+    if state.last_suggest_time == 0.0:
+        state.last_suggest_time = now
+        return
+    if (now - state.last_suggest_time) < interval:
+        return
+    state.last_suggest_time = now
+
+    try:
+        suggestion = await _generate_suggestion(state)
+    except Exception as e:  # noqa: BLE001 — advisory pass is never fatal
+        logger.debug("auto-suggest skipped: %s", e)
+        return
+    if not suggestion:
+        return
+
+    from sidekick.dedup import find_duplicate
+
+    if find_duplicate(suggestion["question"], state.recent_suggestions) is not None:
+        return
+    state.recent_suggestions.append(suggestion["question"])
+    del state.recent_suggestions[:-20]  # keep the last 20
+
+    from sidekick.queue.priority_queue import ActionResult
+
+    result = ActionResult(
+        question=suggestion["question"],
+        action_type="suggestion",
+        answer=suggestion["rationale"] or "Suggested question to ask the client.",
+        confidence="medium",
+        priority=suggestion["impact"] if suggestion["impact"] in
+        ("high", "medium", "low") else "medium",
+        rationale=suggestion["rationale"],
+    )
+    logger.info("Auto-suggest: %s", suggestion["question"][:80])
+    notify(result)
 
 
 async def name_speakers(state: SessionState) -> None:

@@ -28,6 +28,8 @@ def _make_state(action_items=None, results=None) -> SessionState:
     # Default mode: the two-stage accuracy pipeline is OFF (a MagicMock would
     # otherwise make accuracy_mode truthy and change dispatch behaviour).
     s.config.sensitivity.accuracy_mode = False
+    # Proactive advisor OFF by default (same MagicMock-truthiness trap).
+    s.config.sensitivity.auto_suggest = False
     s.context = MagicMock()
     s.analyst = MagicMock()
     s.analyst.analyse_chunk = AsyncMock(return_value=action_items or [])
@@ -272,3 +274,110 @@ class TestInitialiseCapturePreroll:
         assert ok is False
         # The pre-roll capture we started must be torn down on failure.
         assert "stop" in calls
+
+
+class TestAutoSuggest:
+    """Proactive advisor pass (Phase 9.3)."""
+
+    def _suggest_state(self) -> SessionState:
+        s = _make_state()
+        s.config.sensitivity.auto_suggest = True
+        s.config.sensitivity.auto_suggest_interval_seconds = 120
+        s.context = SimpleNamespace(
+            full_transcript=[f"line {i}" for i in range(10)],
+            objectives=["Assess Fabric readiness"],
+        )
+        s.recent_suggestions = []
+        s.last_suggest_time = 0.0
+        return s
+
+    @pytest.mark.asyncio
+    async def test_disabled_by_default_no_call(self, monkeypatch):
+        s = self._suggest_state()
+        s.config.sensitivity.auto_suggest = False
+        called = False
+
+        async def _gen(_s):
+            nonlocal called
+            called = True
+            return {"question": "q", "rationale": "r", "impact": "high"}
+
+        monkeypatch.setattr(engine, "_generate_suggestion", _gen)
+        notify = MagicMock()
+        await engine.maybe_auto_suggest(s, notify)
+        assert notify.call_count == 0
+        assert called is False
+
+    @pytest.mark.asyncio
+    async def test_first_pass_arms_timer_without_notifying(self, monkeypatch):
+        s = self._suggest_state()
+        monkeypatch.setattr(
+            engine,
+            "_generate_suggestion",
+            AsyncMock(return_value={"question": "q", "rationale": "r", "impact": "high"}),
+        )
+        notify = MagicMock()
+        await engine.maybe_auto_suggest(s, notify)
+        assert notify.call_count == 0
+        assert s.last_suggest_time > 0.0
+
+    @pytest.mark.asyncio
+    async def test_emits_one_suggestion_after_interval(self, monkeypatch):
+        s = self._suggest_state()
+        s.last_suggest_time = 1.0  # armed well in the past
+        s.config.sensitivity.auto_suggest_interval_seconds = 0  # interval elapsed
+        monkeypatch.setattr(
+            engine,
+            "_generate_suggestion",
+            AsyncMock(
+                return_value={
+                    "question": "What is your data volume?",
+                    "rationale": "Sizing needs it",
+                    "impact": "high",
+                }
+            ),
+        )
+        notify = MagicMock()
+        await engine.maybe_auto_suggest(s, notify)
+        assert notify.call_count == 1
+        result = notify.call_args.args[0]
+        assert result.action_type == "suggestion"
+        assert result.question == "What is your data volume?"
+        assert result.priority == "high"
+        assert "What is your data volume?" in s.recent_suggestions
+
+    @pytest.mark.asyncio
+    async def test_dedupes_repeat_suggestion(self, monkeypatch):
+        s = self._suggest_state()
+        s.last_suggest_time = 1.0
+        s.config.sensitivity.auto_suggest_interval_seconds = 0
+        s.recent_suggestions = ["What is your data volume?"]
+        monkeypatch.setattr(
+            engine,
+            "_generate_suggestion",
+            AsyncMock(
+                return_value={
+                    "question": "What is your data volume?",
+                    "rationale": "r",
+                    "impact": "high",
+                }
+            ),
+        )
+        notify = MagicMock()
+        await engine.maybe_auto_suggest(s, notify)
+        assert notify.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_too_little_transcript_skips(self, monkeypatch):
+        s = self._suggest_state()
+        s.context.full_transcript = ["only", "three", "lines"]
+        s.last_suggest_time = 1.0
+        s.config.sensitivity.auto_suggest_interval_seconds = 0
+        gen = AsyncMock(
+            return_value={"question": "q", "rationale": "r", "impact": "high"}
+        )
+        monkeypatch.setattr(engine, "_generate_suggestion", gen)
+        notify = MagicMock()
+        await engine.maybe_auto_suggest(s, notify)
+        assert notify.call_count == 0
+        assert gen.await_count == 0

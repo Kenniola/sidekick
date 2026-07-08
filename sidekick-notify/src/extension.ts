@@ -2,7 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { FeedModel, FeedEntry, DetailNode, Alert, isHighPriority, typeTag, detailNodes } from "./feedModel";
+import { FeedModel, FeedEntry, DetailNode, Alert, isHighPriority, typeTag, detailNodes, stripMarkdown, confidenceTag } from "./feedModel";
 
 const ALERTS_PATH = path.join(
   os.homedir(),
@@ -34,6 +34,7 @@ const TYPE_ICON: Record<string, string> = {
   sizing: "graph",
   diagnostic: "pulse",
   action_item: "checklist",
+  suggestion: "lightbulb",
   deliverables: "package",
 };
 
@@ -50,19 +51,25 @@ class SidekickFeedProvider implements vscode.TreeDataProvider<FeedNode> {
   }
 
   private entryItem(entry: FeedEntry): vscode.TreeItem {
-    // Category tag prefix (5.1) + expandable row (5.2 — click to drill down).
+    // Numbered (9.2) + category tag (5.1) + markdown-stripped question, on an
+    // expandable row (5.2). Plain labels can't render markdown, so we clean it.
+    const n = model.entries.indexOf(entry) + 1;
     const item = new vscode.TreeItem(
-      `[${typeTag(entry.type)}] ${entry.headline}`,
+      `${n}. [${typeTag(entry.type)}] ${stripMarkdown(entry.headline)}`,
       vscode.TreeItemCollapsibleState.Collapsed
     );
     const stale = model.isStale(entry, Date.now(), STALE_MS);
     const highlight = isHighPriority(entry) && !entry.seen && !entry.superseded;
+    // Colour the icon by confidence (green/amber/red); an unseen high-priority
+    // finding keeps the orange attention colour.
     item.iconPath = new vscode.ThemeIcon(
       TYPE_ICON[entry.type] ?? "note",
-      highlight ? new vscode.ThemeColor("charts.orange") : undefined
+      highlight
+        ? new vscode.ThemeColor("charts.orange")
+        : confidenceColor(entry.confidence)
     );
     const rel = relativeTime(entry.timestamp);
-    const bits = [rel];
+    const bits = [confidenceTag(entry.confidence), rel];
     if (entry.superseded) {
       bits.push("superseded");
     } else if (stale) {
@@ -83,8 +90,8 @@ class SidekickFeedProvider implements vscode.TreeDataProvider<FeedNode> {
   }
 
   private detailItem(node: DetailNode): vscode.TreeItem {
-    const shortVal =
-      node.value.length > 90 ? node.value.slice(0, 90) + "\u2026" : node.value;
+    const clean = stripMarkdown(node.value);
+    const shortVal = clean.length > 90 ? clean.slice(0, 90) + "\u2026" : clean;
     const label = node.label ? `${node.label}: ${shortVal}` : shortVal;
     const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
     // Full value (may be a multi-paragraph answer) shown on hover as markdown.
@@ -269,6 +276,7 @@ function showToast(alert: Alert): void {
     research: "🔍",
     prototype: "🛠️",
     roadmap: "🗺️",
+    suggestion: "💡",
     deliverables: "📦",
   };
   const emoji = icon[alert.type] ?? "📋";
@@ -316,6 +324,17 @@ function setIdle(): void {
   statusBar.text = "$(megaphone) Sidekick";
   statusBar.backgroundColor = undefined;
   statusBar.tooltip = "Sidekick — click to open the feed";
+}
+
+function confidenceColor(confidence: string): vscode.ThemeColor | undefined {
+  const c = (confidence || "").toLowerCase();
+  if (c === "high") {
+    return new vscode.ThemeColor("charts.green");
+  }
+  if (c === "low") {
+    return new vscode.ThemeColor("charts.red");
+  }
+  return new vscode.ThemeColor("charts.yellow");
 }
 
 function relativeTime(iso: string): string {

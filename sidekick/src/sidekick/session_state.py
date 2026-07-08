@@ -62,6 +62,11 @@ class SessionState:
     last_adjudicate_time: float = 0.0        # monotonic clock of last pass
     objectives_inferred: bool = False        # one-shot objective inference guard
 
+    # Proactive advisor (Phase 9.3). Slow-cadence "question to ask the client"
+    # suggestions, deduped against the recently suggested list.
+    last_suggest_time: float = 0.0           # monotonic clock of last suggestion
+    recent_suggestions: list = field(default_factory=list)
+
     # Grounding context cache — avoids re-reading files on every call
     grounding_cache: str | None = None
     grounding_cache_time: float = 0.0

@@ -11,6 +11,8 @@ import {
   questionOf,
   typeTag,
   detailNodes,
+  stripMarkdown,
+  confidenceTag,
   Alert,
 } from "./feedModel";
 
@@ -185,4 +187,19 @@ test("clear empties the feed", () => {
   m.addAlert(mkAlert({ id: "b" }));
   m.clear();
   assert.strictEqual(m.entries.length, 0);
+});
+
+test("stripMarkdown removes bold/italic/code/headings", () => {
+  assert.strictEqual(
+    stripMarkdown("**Direct answer:** use `F64`"),
+    "Direct answer: use F64",
+  );
+  assert.strictEqual(stripMarkdown("## Heading\n_emph_"), "Heading emph");
+});
+
+test("confidenceTag maps confidence levels", () => {
+  assert.strictEqual(confidenceTag("high"), "HIGH");
+  assert.strictEqual(confidenceTag("low"), "LOW");
+  assert.strictEqual(confidenceTag("medium"), "MED");
+  assert.strictEqual(confidenceTag(""), "MED");
 });

@@ -55,11 +55,36 @@ const TYPE_TAG: Record<string, string> = {
   prototype: "proto",
   diagnostic: "diag",
   action_item: "action",
+  suggestion: "ask",
   deliverables: "deliverable",
 };
 
 export function typeTag(type: string): string {
   return TYPE_TAG[type] ?? type;
+}
+
+/** Strip markdown so it reads cleanly in a plain-text TreeItem label (9.2). */
+export function stripMarkdown(text: string): string {
+  return (text || "")
+    .replace(/\*\*(.*?)\*\*/g, "$1") // bold
+    .replace(/`([^`]*)`/g, "$1") // inline code
+    .replace(/^\s*#+\s*/gm, "") // headings
+    .replace(/\*([^*]+)\*/g, "$1") // italic
+    .replace(/_{1,2}([^_]+)_{1,2}/g, "$1") // underscore emphasis
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Short uppercase confidence tag for the row description (9.2). */
+export function confidenceTag(confidence: string): string {
+  const c = (confidence || "").toLowerCase();
+  if (c === "high") {
+    return "HIGH";
+  }
+  if (c === "low") {
+    return "LOW";
+  }
+  return "MED";
 }
 
 /** Build the expandable detail rows for a finding (pure — no vscode). */

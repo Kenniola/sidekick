@@ -524,7 +524,7 @@ mostly extension) → **Phase 7** (speaker-naming, enables deeper 6.1).
 | 6 | Relevance & accuracy engine | ✅ shipped |
 | 7 | LLM speaker-naming | ✅ shipped |
 | 8 | Research quality + feed clarity | ✅ shipped |
-| 9 | Keyless web search + feed prettify + auto-suggest | ⬜ planned |
+| 9 | Keyless web search + feed prettify + auto-suggest | ✅ shipped |
 
 Config applied to the MoJ profile: `accuracy_mode: true`, glossary. STT model
 stays `small.en` (benchmark). Extension at v0.6.0.
@@ -580,21 +580,25 @@ layered:
 ## 9.2 Feed prettify (readability)
 VS Code TreeItem **labels are plain text** (can't render markdown), so
 `**Direct answer:**` shows literal asterisks. Fixes:
-- **Strip markdown** from row labels (`**`, `##`, `_`) for clean one-liners.
-- **Numbering** — running `1.`, `2.`, `3.` prefix per row.
-- **Confidence at a glance** — icon colour by confidence (green/amber/grey) +
-  a `HIGH`/`MED`/`LOW` tag in the description.
+- **Strip markdown** from row labels (`**`, `##`, `_`) for clean one-liners. ✅
+- **Numbering** — running `1.`, `2.`, `3.` prefix per row. ✅
+- **Confidence at a glance** — icon colour by confidence (green/amber/red) +
+  a `HIGH`/`MED`/`LOW` tag in the description. ✅ (unseen high-priority findings
+  keep the orange attention colour).
 - **Group by thread** — collapsible thread parent nodes with findings nested
-  underneath (needs `thread_id` populated on alerts — small Python change).
-- Keep the rich markdown answer in the hover tooltip (already there).
+  underneath. *Deferred:* needs `thread_id` linked from classifier item →
+  result → alert (a larger change); flat numbered feed shipped instead.
+- Keep the rich markdown answer in the hover tooltip (already there). ✅
 
 ## 9.3 Proactive auto-suggested questions
 Make the existing (manual) `suggest_questions` reasoning **proactive**: a
 periodic pass (piggybacking the adjudicator cadence) that, once context is rich
-enough, generates **1–2 high-value questions the consultant should ask the
-client now** and slots them into the feed as a distinct type (`💡 [ask]`).
-Guardrails: config-gated (`sensitivity.auto_suggest`), capped at 1–2 per pass,
-deduped, only on genuinely new context — proactive without nagging.
+enough, generates **a high-value question the consultant should ask the
+client now** and slots it into the feed as a distinct type (`💡 [ask]`). ✅
+Guardrails: config-gated (`sensitivity.auto_suggest`, **off by default**), slow
+cadence (`auto_suggest_interval_seconds`, default 120s), capped at **1** per
+pass, deduped against recent suggestions, and only after enough transcript —
+proactive without nagging. Emitted straight to the feed (bypasses research).
 
 ## Recommended order
 **9.1** (keyless web — biggest remaining accuracy gap) → **9.2** (readability) →
