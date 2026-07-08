@@ -400,3 +400,95 @@ is validated against a realistic, calmer stream.
    configurable per machine. (C1)
 6. **Speaker attribution** — **Tier 1 + Tier 2** (correct interleave + LLM
    naming) for now; Tier 3 post-call diarization **deferred**. (C3)
+
+---
+
+# Post-test findings — MoJ session, 08 Jul 2026 → Phases 5–7
+
+Studied line-by-line: `transcript_20260708_101235.txt` (28 min, ~20 findings),
+`alerts.jsonl`, and `deliverables_20260708_104134.md`. Config at test time:
+**`small.en`**, **`accuracy_mode: false`**, **no objectives / glossary**.
+
+## What worked
+- Transcript quality is materially better (Phase 0/2) even on `small.en`: domain
+  terms mostly correct, few hallucinations, coherent sentences.
+- The Feed (Phase 3) is a clear win for thread tracking.
+- The follow-up email is coherent and captures the real topics.
+
+## Evidence-based problems
+
+**P1 — Low precision (adjudicator was off).** The fast classifier surfaced
+conversational **statements**, consultant **self-coaching**, and garbled
+fragments as findings, e.g. *"We should consider GitHub…but I don't think I
+want to"*, *"I don't think we use the HR tables in F&O"*, *"You've got the right
+split, Kenni…"* (Sidekick answering the consultant's own advice), *"Depending on
+what the data size, for instance, I plan to use it."* → **Enabling
+`accuracy_mode` (Phase 1 adjudicator) is the single biggest fix**; not yet on.
+
+**P2 — Enrichment stacks duplicate feed rows.** Re-research emits
+`[ENRICHED] <question>` with a *changed* summary, so its feed `id` differs from
+the original and the Phase 3 supersede can't collapse it (e.g. accessibility ×4,
+Copilot Word/Excel ×4, "request process" ×3). The id must be stable across
+enrichment.
+
+**P3 — Action items missed in deliverables.** The pack said *"No action items"*
+yet the classifier had flagged `action_item` findings ("two slides on strategic
+direction", "schedule a workshop"). Classifier `action_item` results never reach
+`context.action_items`, so the deliverables table is blank.
+
+**P4 — Follow-up batch contains garbled/duplicate fragments.** The
+customer-facing follow-up list includes incomplete sentences (*"…as the diagram
+suggested yesterday, that you guys brought up because."*) and near-duplicates.
+
+**P5 — No speaker attribution.** Every line is `(audio)`; a 6-person meeting
+collapses to one speaker, so Sidekick can't tell a client question from the
+consultant's own statement (which feeds P1).
+
+**P6 — STT mishears key terms.** `ADO → "ADL"` (flips meaning), `workspaces →
+"word spaces"`, `Copilot → "CodePilot"`, `Dataverse → "today diversity"`,
+`Cabinet Office → "cabin office"`, `offshore → "go-for-shore"`. **Glossary +
+stt_corrections (Phase 5f, already built) are unused** on this profile.
+
+## Do-now config wins (zero new code — already shipped)
+1. `sensitivity.accuracy_mode: true` on the MoJ profile → adjudicator filters P1.
+2. Add `objectives:` (or `add_context "goal: …"`) so relevance is goal-scored.
+3. Add `glossary:` (Azure DevOps/ADO, OneLake, Dataverse, Databricks, F&O,
+   Dayforce, workspace, CI/CD) + `stt_corrections:` for the P6 mishears.
+4. Optionally `answer_tier: deep` (Phase 4) for higher-accuracy answers.
+
+## Phase 5 — Feed UX & session hygiene (extension + small Python)
+- **5.1 Category tags + legend.** Prefix each feed row with a short type tag
+  (`[research]`, `[sizing]`, `[roadmap]`, `[action]`, `[deliverable]`) beside the
+  icon; document the icon legend. (P feedback 2b)
+- **5.2 Drill-down.** Make feed rows **expandable** (collapsible children:
+  rationale, answer preview, sources, thread); add a per-row **"View in Chat"**
+  that surfaces *that* finding, not the generic `status`. (2b/2c)
+- **5.3 Session boundary.** On `listen`, rotate `alerts.jsonl` (archive the prior
+  file, write a `session_start` marker); the extension **clears the feed** on a
+  new session so old findings don't linger, and the file can't grow unbounded.
+  (2d)
+- **5.4 Stable enrichment id.** Base the alert `id` on the *original* question so
+  enrichment updates the same feed row (fixes P2, complements Phase 3 supersede).
+
+## Phase 6 — Relevance & accuracy engine (Python)
+- **6.1 Classifier precision.** Sharpen the analyst prompt to **not** surface the
+  consultant's own statements/coaching, statements-of-intent, or garbled
+  fragments; require a genuine client question or a verifiable claim. (P1)
+- **6.2 Action-item capture.** Route `action_item` classifications into
+  `context.action_items` so the deliverables table is populated. (P3)
+- **6.3 Follow-up batch hygiene.** Filter the deliverables follow-up list to
+  well-formed, de-duplicated questions (drop incomplete fragments; optional
+  LLM tidy). (P4)
+- **6.4 Enrichment restraint.** Only re-notify when the enriched answer
+  *materially* changed; otherwise update the existing row silently. (P2)
+
+## Phase 7 — LLM speaker-naming (was Phase 5 / C3 Tier 2)
+Now clearly justified by P5: attribute `(audio)`/`(remote)` lines to named
+participants so the transcript reads correctly **and** the classifier can apply
+the P1 "don't research the consultant's own words" rule.
+
+## Recommended order
+**Do-now config wins** (immediate, no build) → **Phase 6** (relevance engine —
+biggest accuracy lever now that the pipeline exists) → **Phase 5** (feed UX,
+mostly extension) → **Phase 7** (speaker-naming, enables deeper 6.1).
+
