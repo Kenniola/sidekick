@@ -23,6 +23,10 @@ _COMPLEXITY_TIER: dict[str, str] = {
     "medium": "standard",
 }
 
+# Enrichment restraint (Phase 6 / 6.4): a duplicate question answered within
+# this window is not re-researched — the fresh answer already stands.
+_ENRICH_COOLDOWN_SECONDS = 90
+
 
 @dataclass
 class ActionResult:
@@ -129,6 +133,20 @@ class PriorityQueue:
         # Check for semantic duplicates against completed outputs
         duplicate_of = self._find_completed_duplicate(item)
         if duplicate_of:
+            # Enrichment restraint (6.4): if we answered this same question very
+            # recently, skip re-research entirely — the fresh answer already
+            # stands. Only re-research once it has gone stale so evolving
+            # context can refresh it.
+            age = (
+                datetime.now(timezone.utc) - duplicate_of.timestamp
+            ).total_seconds()
+            if age < _ENRICH_COOLDOWN_SECONDS:
+                logger.info(
+                    "Duplicate within cooldown (%.0fs) — skipping re-research: %s",
+                    age,
+                    item.question[:60],
+                )
+                return
             # Mark as a context-enrichment re-research
             item.question = (
                 f"[ENRICHED] {item.question} "

@@ -91,12 +91,21 @@ class MeetingContext:
     def record_decisions(self, items) -> None:
         """Record analyst decisions into meeting context."""
         for item in items:
+            itype = getattr(item, "type", "unknown")
             q = {
                 "question": getattr(item, "question", str(item)),
-                "type": getattr(item, "type", "unknown"),
+                "type": itype,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }
             self.open_questions.append(q)
+            # Capture action_item classifications so the deliverables table is
+            # populated (Phase 6 / 6.2). Deduped by description.
+            if itype == "action_item":
+                desc = (getattr(item, "question", "") or "").strip()
+                if desc and not any(
+                    a.get("description") == desc for a in self.action_items
+                ):
+                    self.action_items.append({"description": desc})
 
     def mark_answered(self, question: str) -> None:
         """Move a question from open to answered."""

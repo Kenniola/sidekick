@@ -35,3 +35,16 @@ class TestBuildAnalystSystemPrompt:
         prompt = build_analyst_system_prompt(cfg)
         assert '"on lake" → "OneLake"' in prompt
         assert '"crime em eye" → "Crime MI"' in prompt
+
+
+class TestPrecisionRules:
+    """Phase 6 / 6.1: the base prompt must instruct against low-precision surfacing."""
+
+    def test_excludes_consultant_own_words(self):
+        assert "CONSULTANT'S OWN" in ANALYST_SYSTEM_PROMPT
+
+    def test_excludes_statements_of_intent(self):
+        assert "statements of intent" in ANALYST_SYSTEM_PROMPT
+
+    def test_excludes_garbled_fragments(self):
+        assert "garbled or incomplete fragments" in ANALYST_SYSTEM_PROMPT

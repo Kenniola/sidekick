@@ -7,6 +7,21 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Phase 6 (accuracy spec) — relevance & accuracy engine.** Acts on the MoJ
+  08-Jul session study; all behaviour improvements, no new config.
+  - **Classifier precision (6.1).** The analyst prompt now explicitly excludes
+    the consultant's own statements/coaching, statements of intent, and garbled
+    fragments — surface only genuine client questions or verifiable claims.
+    (`tests/test_analyst_prompt.py`)
+  - **Action-item capture (6.2).** `action_item` classifications now populate
+    `context.action_items` (deduped), so the deliverables table is filled
+    instead of showing "No action items". (`tests/test_deliverables.py`)
+  - **Follow-up hygiene (6.3).** The deliverables follow-up list drops garbled
+    fragments and near-duplicates and is capped, so the customer-facing batch
+    reads cleanly. (`tests/test_deliverables.py`)
+  - **Enrichment restraint (6.4).** A duplicate question answered within a 90 s
+    cooldown is no longer re-researched — cutting the repeated `[ENRICHED]`
+    churn seen in the MoJ session. (`tests/test_priority_queue.py`)
 - **Phase 5 (accuracy spec) — feed UX & session hygiene.** Acts on the MoJ
   08-Jul test feedback (`sidekick-notify` v0.5.0).
   - **Category tags + drill-down (5.1/5.2).** Feed rows now show a `[type]` tag

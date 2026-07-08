@@ -263,3 +263,77 @@ class TestInlineDigest:
         pack = self._pack(email=long_email)
         assert len(pack.inline_digest("p.md")) < len(pack.full_markdown())
 
+
+# --------------------------------------------------------------------------- #
+# Follow-up hygiene (Phase 6 / 6.3)
+# --------------------------------------------------------------------------- #
+
+class TestCleanFollowups:
+    def test_drops_trailing_conjunction_fragment(self):
+        out = deliverables._clean_followups(
+            ["We may not be as compartmental as the diagram suggested because."]
+        )
+        assert out == []
+
+    def test_keeps_question_mark_item(self):
+        q = "Is it an advantage to use GitHub instead of Azure DevOps?"
+        assert deliverables._clean_followups([q]) == [q]
+
+    def test_keeps_long_statement_question(self):
+        q = "We need to know how the data is consumed and who the consumers are"
+        assert deliverables._clean_followups([q]) == [q]
+
+    def test_dedupes_case_insensitively(self):
+        out = deliverables._clean_followups(["Is GitHub better?", "is github better?"])
+        assert len(out) == 1
+
+    def test_drops_short_non_question_fragment(self):
+        assert deliverables._clean_followups(["Stage two of this."]) == []
+
+    def test_caps_length(self):
+        qs = [f"Is this valid question number {i} in the batch?" for i in range(20)]
+        assert len(deliverables._clean_followups(qs, limit=5)) == 5
+
+
+# --------------------------------------------------------------------------- #
+# Action-item capture (Phase 6 / 6.2)
+# --------------------------------------------------------------------------- #
+
+class TestActionItemCapture:
+    def _item(self, question, type_):
+        from sidekick.analyst.classifier import ActionItem
+
+        return ActionItem(
+            question=question, type=type_, complexity="simple", priority="high"
+        )
+
+    def test_action_item_captured_into_context(self):
+        from sidekick.analyst.context import MeetingContext
+
+        ctx = MeetingContext()
+        ctx.record_decisions(
+            [
+                self._item("Prepare two slides on strategic direction", "action_item"),
+                self._item("What is F64 headroom?", "research"),
+            ]
+        )
+        descs = [a["description"] for a in ctx.action_items]
+        assert descs == ["Prepare two slides on strategic direction"]
+
+    def test_action_items_deduped(self):
+        from sidekick.analyst.context import MeetingContext
+
+        ctx = MeetingContext()
+        ctx.record_decisions([self._item("Schedule a workshop", "action_item")])
+        ctx.record_decisions([self._item("Schedule a workshop", "action_item")])
+        assert len(ctx.action_items) == 1
+
+    def test_captured_items_render_in_deliverables_table(self):
+        from sidekick.analyst.context import MeetingContext
+
+        ctx = MeetingContext()
+        ctx.record_decisions([self._item("Schedule a workshop", "action_item")])
+        table = deliverables._action_item_table(ctx)
+        assert "Schedule a workshop" in table
+        assert "No action items" not in table
+

@@ -259,6 +259,8 @@ class TestDedup:
                 question="What is the Fabric capacity throughput limit?",
                 action_type="research",
                 answer="It is governed by the SKU CU allocation.",
+                # Older than the enrichment cooldown so it re-researches (6.4).
+                timestamp=datetime.now(timezone.utc) - timedelta(seconds=120),
             )
         )
         dup = _item(question="What is the Fabric capacity throughput limit?")
@@ -413,3 +415,43 @@ class TestExpiry:
         await q.enqueue(_item())
         await q.expire_stale(minutes=5)
         assert q.fast_lane.items[0].status == "pending"
+
+
+def _lane_total(q) -> int:
+    return (
+        len(q.fast_lane.items) + len(q.standard_lane.items) + len(q.deep_lane.items)
+    )
+
+
+class TestEnrichmentCooldown:
+    """Phase 6 / 6.4: a very recent duplicate is not re-researched."""
+
+    @pytest.mark.asyncio
+    async def test_recent_duplicate_skipped(self):
+        q = _make_queue()
+        q.completed.append(
+            ActionResult(
+                question="What is F64 capacity?",
+                action_type="research",
+                answer="A",
+                timestamp=datetime.now(timezone.utc),
+            )
+        )
+        await q.enqueue(_item(question="What is F64 capacity?"))
+        assert _lane_total(q) == 0  # within cooldown → skipped
+
+    @pytest.mark.asyncio
+    async def test_stale_duplicate_is_enriched(self):
+        q = _make_queue()
+        q.completed.append(
+            ActionResult(
+                question="What is F64 capacity?",
+                action_type="research",
+                answer="A",
+                timestamp=datetime.now(timezone.utc) - timedelta(seconds=120),
+            )
+        )
+        item = _item(question="What is F64 capacity?")
+        await q.enqueue(item)
+        assert _lane_total(q) == 1
+        assert item.question.startswith("[ENRICHED]")

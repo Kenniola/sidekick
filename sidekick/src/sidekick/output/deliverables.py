@@ -15,6 +15,7 @@ degrades gracefully — ``generate_deliverables`` always returns a string so the
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,6 +66,38 @@ def _action_item_table(context) -> str:
     return "\n".join(rows)
 
 
+_FRAGMENT_TAIL_RE = re.compile(
+    r"\b(and|but|or|because|so|as|that|which|the|a|an|to|of|for|with)"
+    r"\s*[.,\u2026]?$",
+    re.IGNORECASE,
+)
+
+
+def _clean_followups(questions: list[str], *, limit: int = 12) -> list[str]:
+    """Filter the follow-up list to well-formed, de-duplicated questions (6.3).
+
+    Drops incomplete fragments (trailing conjunctions/prepositions, too short)
+    and near-duplicates so the customer-facing follow-up reads cleanly.
+    """
+    seen: set[str] = set()
+    kept: list[str] = []
+    for q in questions:
+        t = (q or "").strip()
+        key = t.lower().rstrip("?.! ")
+        if not t or key in seen:
+            continue
+        # A well-formed follow-up either ends with '?' or is a reasonably
+        # complete statement (>= 6 words) that doesn't trail off mid-clause.
+        if not t.endswith("?"):
+            if len(t.split()) < 6 or _FRAGMENT_TAIL_RE.search(t):
+                continue
+        seen.add(key)
+        kept.append(t)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
 def _unanswered_research_batch(session_log, context) -> str:
     """List questions/threads not resolved live, as a follow-up checklist.
 
@@ -81,6 +114,9 @@ def _unanswered_research_batch(session_log, context) -> str:
         text = (q.get("question") or "").strip()
         if text and text.lower() not in researched:
             pending.append(text)
+    # Clean the customer-facing follow-up list: drop garbled fragments and
+    # near-duplicates, cap the length (Phase 6 / 6.3).
+    pending = _clean_followups(pending)
 
     open_threads = [
         t.topic

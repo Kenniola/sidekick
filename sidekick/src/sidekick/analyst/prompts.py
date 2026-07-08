@@ -77,6 +77,17 @@ MUST have priority_score >= 0.5. When in doubt, score higher — false positives
 RULES:
 - Do NOT trigger on social pleasantries, screen-sharing chatter, or meeting logistics
 - Do NOT trigger when the consultant answers confidently and correctly
+- Do NOT surface the CONSULTANT'S OWN statements, opinions, or coaching as a \
+research item. Only surface genuine questions the CLIENT is asking, or technical \
+claims that need verifying. If someone is advising, narrating, or thinking \
+aloud, classify as "none".
+- Do NOT surface statements of intent or preference ("I want to…", "we should \
+consider… but I don't think I want to", "let's park that") — these are decisions, \
+not researchable questions. Classify as "none" unless they contain a concrete \
+technical question.
+- Do NOT surface garbled or incomplete fragments. If the text is not a coherent, \
+complete question or claim (often from speech-to-text errors), classify as \
+"none" rather than guessing at what was meant.
 - DO trigger silently for answer verification when the consultant states a technical fact
 - Batch related questions asked in rapid succession
 - During meeting opening (first 2 min), score questions normally but cap priority \
