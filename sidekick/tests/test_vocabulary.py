@@ -27,11 +27,11 @@ from sidekick.transcript.vocabulary import (
 class TestExtractTerms:
     def test_picks_proper_nouns_and_acronyms(self):
         text = (
-            "We connect to Denodo and surface views into Microsoft Fabric. "
-            "The CDIO team and AWS migration matter to HMRC."
+            "We connect to Northwind and surface views into Microsoft Fabric. "
+            "The Fabrikam team and AWS migration matter to Contoso."
         )
         terms = extract_terms(text)
-        for expected in ("Denodo", "Microsoft", "Fabric", "CDIO", "AWS", "HMRC"):
+        for expected in ("Northwind", "Microsoft", "Fabric", "Fabrikam", "AWS", "Contoso"):
             assert expected in terms
 
     def test_drops_common_stopwords(self):
@@ -48,14 +48,14 @@ class TestExtractTerms:
 
     def test_blocklisted_caps_words_excluded(self):
         # "THE" in caps is filler, not a term.
-        terms = extract_terms("THE DATA must flow. Denodo helps.")
+        terms = extract_terms("THE DATA must flow. Northwind helps.")
         assert "THE" not in terms
-        assert "Denodo" in terms
+        assert "Northwind" in terms
 
     def test_dedupes_preserving_first_seen_order(self):
-        terms = extract_terms("Fabric Fabric Denodo Fabric Denodo")
+        terms = extract_terms("Fabric Fabric Northwind Fabric Northwind")
         assert terms.count("Fabric") == 1
-        assert terms.count("Denodo") == 1
+        assert terms.count("Northwind") == 1
 
     def test_empty_text_returns_empty(self):
         assert extract_terms("") == []
@@ -88,20 +88,20 @@ class TestVocabulary:
         assert "AWS" in prompt
 
     def test_update_promotes_in_session_term(self):
-        # A term that only appears mid-call (Denodo) must enter the prior once
+        # A term that only appears mid-call (Northwind) must enter the prior once
         # the analyst surfaces it correctly in key_facts/research.
         v = Vocabulary()
         v.seed("Microsoft Fabric")
-        assert "Denodo" not in (v.initial_prompt() or "")
+        assert "Northwind" not in (v.initial_prompt() or "")
 
-        v.update(["HMRC uses Denodo for data virtualization."])
-        assert "Denodo" in v.terms()
+        v.update(["Contoso uses Northwind for data virtualization."])
+        assert "Northwind" in v.terms()
 
     def test_update_accepts_single_string(self):
         v = Vocabulary()
-        v.update("Posit and Denodo on the estate")
-        assert "Posit" in v.terms()
-        assert "Denodo" in v.terms()
+        v.update("Tailwind and Northwind on the estate")
+        assert "Tailwind" in v.terms()
+        assert "Northwind" in v.terms()
 
     def test_update_none_is_noop(self):
         v = Vocabulary()
@@ -113,25 +113,25 @@ class TestVocabulary:
         # corrected proper noun rises to the top of the bounded prompt.
         v = Vocabulary(max_terms=2)
         v.seed("Alpha Bravo Charlie Delta")  # four seed terms, weight 1 each
-        v.update(["Denodo"])  # weight 2
-        v.update(["Denodo"])  # weight 4 total
+        v.update(["Northwind"])  # weight 2
+        v.update(["Northwind"])  # weight 4 total
         top = v.terms()
-        assert top[0] == "Denodo"
+        assert top[0] == "Northwind"
         assert len(top) == 2
 
     def test_seed_terms_added_verbatim(self):
         # Glossary phrases are trusted as-is, including multi-word entries that
         # free-text extraction would split or drop.
         v = Vocabulary()
-        v.seed_terms(["HMCTS Crime MI", "Caseworker Portal"])
-        assert "HMCTS Crime MI" in v.terms()
-        assert "Caseworker Portal" in v.terms()
+        v.seed_terms(["Contoso Analytics", "Contoso Portal"])
+        assert "Contoso Analytics" in v.terms()
+        assert "Contoso Portal" in v.terms()
 
     def test_seed_terms_outrank_plain_seed(self):
         v = Vocabulary(max_terms=1)
         v.seed("Alpha Bravo Charlie")  # weight 1 each
-        v.seed_terms(["Denodo"])  # weight 3
-        assert v.terms()[0] == "Denodo"
+        v.seed_terms(["Northwind"])  # weight 3
+        assert v.terms()[0] == "Northwind"
 
     def test_seed_terms_empty_is_noop(self):
         v = Vocabulary()
@@ -166,26 +166,26 @@ class TestConfigSeedText:
 
     def test_builds_from_customer_description_domains(self):
         cfg = SimpleNamespace(
-            customer="HMRC",
+            customer="Contoso",
             description="Fabric adoption and AWS integration",
             domains=["Microsoft Fabric", "Power BI", "PostgreSQL"],
         )
         text = config_seed_text(cfg)
-        assert "HMRC" in text
+        assert "Contoso" in text
         assert "Fabric" in text
         assert "PostgreSQL" in text
 
     def test_seed_from_config_feeds_vocabulary(self):
         cfg = SimpleNamespace(
-            customer="HMRC",
-            description="AWS S3 and Denodo virtualization",
+            customer="Contoso",
+            description="AWS S3 and Northwind virtualization",
             domains=["Microsoft Fabric"],
         )
         v = Vocabulary()
         v.seed(config_seed_text(cfg))
         terms = v.terms()
-        assert "HMRC" in terms
-        assert "Denodo" in terms
+        assert "Contoso" in terms
+        assert "Northwind" in terms
         assert "Fabric" in terms
 
 

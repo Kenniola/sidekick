@@ -26,12 +26,12 @@ from sidekick.output.deliverables import DeliverablesPack
 def _wire_state(monkeypatch, tmp_path, *, big_email: str, auto_save: bool = False):
     """Set up ``server._state`` for a stop with a controlled deliverables pack."""
     pack = DeliverablesPack(
-        customer="HMRC",
+        customer="Contoso",
         email=big_email,
         actions=(
             "| # | Action | Owner | Due |\n"
             "|---|--------|-------|-----|\n"
-            "| 1 | Send capacity sizing doc | Kola | Fri |"
+            "| 1 | Send capacity sizing doc | Alex | Fri |"
         ),
         follow_up="- [ ] What is the egress cost?",
     )
@@ -57,7 +57,7 @@ def _wire_state(monkeypatch, tmp_path, *, big_email: str, auto_save: bool = Fals
     )
     context = SimpleNamespace(threads={})
     config = SimpleNamespace(
-        customer="HMRC",
+        customer="Contoso",
         output=SimpleNamespace(auto_save=auto_save),
         notifications=SimpleNamespace(sound="silent"),
     )

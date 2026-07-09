@@ -30,11 +30,11 @@ class TestBuildAnalystSystemPrompt:
 
     def test_multiple_corrections_each_rendered(self):
         cfg = SimpleNamespace(
-            stt_corrections={"on lake": "OneLake", "crime em eye": "Crime MI"}
+            stt_corrections={"on lake": "OneLake", "data verse": "Dataverse"}
         )
         prompt = build_analyst_system_prompt(cfg)
         assert '"on lake" → "OneLake"' in prompt
-        assert '"crime em eye" → "Crime MI"' in prompt
+        assert '"data verse" → "Dataverse"' in prompt
 
 
 class TestPrecisionRules:

@@ -435,14 +435,14 @@ class TestCrossChunkCoherence:
         audio = np.zeros(16_000, dtype=np.float32)
 
         asyncio.run(
-            rec.transcribe_chunk(audio, initial_prompt="Glossary: Denodo.")
+            rec.transcribe_chunk(audio, initial_prompt="Glossary: Northwind.")
         )
         asyncio.run(
-            rec.transcribe_chunk(audio, initial_prompt="Glossary: Denodo.")
+            rec.transcribe_chunk(audio, initial_prompt="Glossary: Northwind.")
         )
 
         prompt = fake.calls[1]["initial_prompt"]
-        assert "Denodo" in prompt  # vocabulary prior (5b)
+        assert "Northwind" in prompt  # vocabulary prior (5b)
         assert "omega" in prompt   # previous-chunk tail (5e)
 
     def test_silent_chunk_does_not_erase_tail(self, monkeypatch):

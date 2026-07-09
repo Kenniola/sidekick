@@ -407,11 +407,11 @@ class TestVocabularyPrior:
         rec = FakeRecogniser(lines_per_chunk=["L"])
         cap = FakeAudioCapture(chunks=["c1"])
         state = _make_state(rec, cap)
-        state.vocabulary = _FakeVocab("Glossary: Denodo, Microsoft Fabric.")
+        state.vocabulary = _FakeVocab("Glossary: Northwind, Microsoft Fabric.")
 
         await engine._consume_audio(state, lambda r: None)
 
-        assert rec.prompts == ["Glossary: Denodo, Microsoft Fabric."]
+        assert rec.prompts == ["Glossary: Northwind, Microsoft Fabric."]
 
     @pytest.mark.asyncio
     async def test_no_vocabulary_passes_none_prompt(self, monkeypatch):

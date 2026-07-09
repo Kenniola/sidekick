@@ -1,8 +1,8 @@
 """Derived, self-maintaining domain vocabulary for the Whisper prior (Phase 5b).
 
 Whisper's recognition of proper nouns and domain jargon (the terms a consultant
-reads back to a client) is its weakest area — "Denodo" came out as "the node",
-"Gen 1" as "gentlemen", "Andy Esdale" as "Andy Estel". faster-whisper accepts an
+reads back to a client) is its weakest area — "Northwind" came out as "the node",
+"Gen 1" as "gentlemen", "Priya Okafor" as "Pria O'Farrell". faster-whisper accepts an
 ``initial_prompt`` that biases recognition toward expected vocabulary, but a
 hand-curated glossary is just hardcoding by another name: it rots, must be
 authored per customer, and only ever covers terms someone remembered.
@@ -16,7 +16,7 @@ holds, and lets it **improve over the call**:
    context already contains.
 2. **Adapt** in-session from the streams the LLM has *already corrected from
    context* — classified thread ``key_facts`` and research results. The analyst
-   writes "Denodo" correctly even when Whisper misheard it, so feeding those
+   writes "Northwind" correctly even when Whisper misheard it, so feeding those
    terms back makes every later chunk recognise the term. The longer the
    meeting runs, the better proper-noun recognition gets.
 
@@ -28,11 +28,11 @@ from __future__ import annotations
 import re
 
 # Acronyms: 2+ uppercase letters, optionally trailing digits (MI, AWS, ADLS,
-# CDIO, HMRC, SQL, RLS, S3, PG16). Case-sensitive on purpose.
+# SQL, RLS, S3, PG16). Case-sensitive on purpose.
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,}\b")
 
 # Capitalised proper-noun-ish tokens: an initial capital followed by lower-case
-# letters, length >= 3 (Denodo, Fabric, Oracle, Pega, Posit, Trystan, Esdale).
+# letters, length >= 3 (Northwind, Fabric, Contoso, Tailwind, Fabrikam).
 # Allows an internal hyphen ("T-SQL" is caught by the acronym rule; "Power-BI"
 # style is rare). Case-sensitive.
 _PROPER_RE = re.compile(r"\b[A-Z][a-z]{2,}(?:-[A-Z][a-z]+)?\b")

@@ -89,7 +89,7 @@ gh auth status                                                     # GitHub toke
 
 ## Speech-to-Text
 
-Sidekick uses **faster-whisper** running locally on CPU. There are no API keys, no cloud STT, and no audio leaves the device — important for HMRC, MoJ, and other regulated customer engagements.
+Sidekick uses **faster-whisper** running locally on CPU. There are no API keys, no cloud STT, and no audio leaves the device — important for regulated customer engagements.
 
 The default model is `small.en` (~470MB, ~5-7% WER). Override per-customer in `customers.yaml`:
 
@@ -130,7 +130,7 @@ BRAVE_API_KEY=BSA-xxxxxxxx       # https://brave.com/search/api/
 | AWS / Databricks / Spark / PostgreSQL verified URLs | No (LLM knowledge only, no citations) | Yes |
 | Per-domain routing (e.g. AWS question promotes AWS docs) | n/a | Yes |
 
-**Notes for regulated engagements (HMRC / MoJ):**
+**Notes for regulated engagements:**
 - The key is **per-machine** and local to `~/.sidekick/.env` — never committed, never in `customers.yaml`. Each consultant sets their own.
 - These are **external SaaS**. Only the **query text** leaves the device (no transcript or customer data), and results are filtered to the verified-source allowlist before anything is surfaced.
 - Both providers offer free tiers. Leave both keys **unset** unless external-source breadth is explicitly approved for the engagement.

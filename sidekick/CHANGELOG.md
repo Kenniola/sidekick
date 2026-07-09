@@ -48,7 +48,7 @@ All notable changes to sidekick-copilot are documented in this file.
   surface. Best-effort — degrades to Microsoft Learn + model knowledge on
   rate-limit/failure. (`tests/test_research_routing.py`)
 - **Phase 8 (accuracy spec) — research quality + feed clarity.** Acts on the
-  second MoJ test.
+  second customer test.
   - **Relevance-aware source ranking (8.1).** Web hits are now scored by topical
     relevance *and* source trust, so an off-topic high-trust page (e.g. a stray
     `learn.microsoft.com` Cosmos DB result for a Terraform question) is demoted
@@ -79,7 +79,7 @@ All notable changes to sidekick-copilot are documented in this file.
   Toggle with `speech.speaker_naming` (default on). New `analyst/speakers.py`
   (`build_roster`, `name_lines`) + `engine.name_speakers`.
   (`tests/test_speakers.py`, `tests/test_config_merge.py`)
-- **Phase 6 (accuracy spec) — relevance & accuracy engine.** Acts on the MoJ
+- **Phase 6 (accuracy spec) — relevance & accuracy engine.** Acts on the customer
   08-Jul session study; all behaviour improvements, no new config.
   - **Classifier precision (6.1).** The analyst prompt now explicitly excludes
     the consultant's own statements/coaching, statements of intent, and garbled
@@ -93,8 +93,8 @@ All notable changes to sidekick-copilot are documented in this file.
     reads cleanly. (`tests/test_deliverables.py`)
   - **Enrichment restraint (6.4).** A duplicate question answered within a 90 s
     cooldown is no longer re-researched — cutting the repeated `[ENRICHED]`
-    churn seen in the MoJ session. (`tests/test_priority_queue.py`)
-- **Phase 5 (accuracy spec) — feed UX & session hygiene.** Acts on the MoJ
+    churn seen in the customer session. (`tests/test_priority_queue.py`)
+- **Phase 5 (accuracy spec) — feed UX & session hygiene.** Acts on the customer
   08-Jul test feedback (`sidekick-notify` v0.5.0).
   - **Category tags + drill-down (5.1/5.2).** Feed rows now show a `[type]` tag
     beside the icon and are **expandable** — click a finding to reveal its
@@ -254,10 +254,10 @@ All notable changes to sidekick-copilot are documented in this file.
 ### Removed
 
 - **Azure Speech backend** — entirely removed from the codebase, including `AzureSpeechRecogniser`, the `[azure]` install extra, `azure-identity` and `azure-cognitiveservices-speech` dependencies, all `AZURE_SPEECH_*` environment variable handling, `SpeechConfig.azure_*` fields, `speaker_map`, the installer's `azure` feature flag, and the `Azure Speech (Optional)` section from `README.md` and `INSTALL.md`.
-  - **Rationale:** real-meeting transcript analysis showed (1) diarization had been silently disabled (the code used `SpeechRecognizer` instead of `ConversationTranscriber` due to `SPXERR_INVALID_ARG` with Entra ID auth), and (2) Azure Speech's only practical advantage over local Whisper was lost. For HMRC/MoJ engagements, the on-device privacy posture of Whisper is also decisive.
+  - **Rationale:** real-meeting transcript analysis showed (1) diarization had been silently disabled (the code used `SpeechRecognizer` instead of `ConversationTranscriber` due to `SPXERR_INVALID_ARG` with Entra ID auth), and (2) Azure Speech's only practical advantage over local Whisper was lost. For regulated customer engagements, the on-device privacy posture of Whisper is also decisive.
   - **Migration:** customer YAML profiles with `backend: azure` are auto-rewritten to `whisper` at load time and a warning is logged. Delete the now-unused `AZURE_SPEECH_*` lines from `~/.sidekick/.env`.
-- **`offerings` tool and all Eng Hub integration** — removed the `offerings` MCP tool, the `EngHubPipeline` module (`actions/enghub.py`) and its tests, the proactive offerings background search, the `suggest_questions` offerings fetch, and every offerings reference in the analyst prompt chain, README, and agent definition. Sidekick is now seven tools.
-  - **Rationale:** eng.ms is Entra-gated and the sidekick server process cannot authenticate to it. A sidekick (MCP server) cannot call the EngineeringHub (MCP server) directly — both only talk to the host/client — so live offerings would require building and owning a bespoke bridge process that is brittle (hardwired to EngHub's schema) and re-introduces the auth complexity removed alongside Azure Speech. The feature delivered no live value and the "auth required" placeholder code was misleading. Topic-relevant delivery guidance is better surfaced by the `research` tool against verified web sources.
+- **`offerings` tool and the internal knowledge-base integration** — removed the `offerings` MCP tool, its pipeline module and tests, the proactive offerings background search, the `suggest_questions` offerings fetch, and every offerings reference in the analyst prompt chain, README, and agent definition. Sidekick is now seven tools.
+  - **Rationale:** the internal knowledge base is Entra-gated and the sidekick server process cannot authenticate to it. A sidekick (MCP server) cannot call another MCP server directly — both only talk to the host/client — so live offerings would require building and owning a bespoke bridge process that is brittle (hardwired to that schema) and re-introduces the auth complexity removed alongside Azure Speech. The feature delivered no live value and the "auth required" placeholder code was misleading. Topic-relevant delivery guidance is better surfaced by the `research` tool against verified web sources.
 
 ### Changed
 

@@ -68,8 +68,8 @@ class TestParseConfig:
         assert _parse_config({}).glossary == []
 
     def test_glossary_parsed_and_trimmed(self):
-        c = _parse_config({"glossary": ["Denodo", "  OneLake  ", "", "   "]})
-        assert c.glossary == ["Denodo", "OneLake"]
+        c = _parse_config({"glossary": ["Northwind", "  OneLake  ", "", "   "]})
+        assert c.glossary == ["Northwind", "OneLake"]
 
     def test_stt_corrections_defaults_empty(self):
         assert _parse_config({}).stt_corrections == {}
