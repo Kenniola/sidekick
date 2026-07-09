@@ -32,7 +32,7 @@ _MAX_BATCHES = 8
 SPEAKER_SYSTEM_PROMPT = """\
 You attribute meeting-transcript lines to named speakers. You are given the \
 KNOWN PARTICIPANTS (with roles) and a numbered transcript. Use explicit cues \
-only — self-introductions ("I'm Chris"), direct address ("Kenni, what do you \
+only — self-introductions ("I'm Sam"), direct address ("Alex, what do you \
 think?"), names mentioned, and turn-taking — to decide who spoke each line.
 
 Rules:

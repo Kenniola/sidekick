@@ -58,11 +58,11 @@ class TestActionItemTable:
 
     def test_renders_rows_with_owner_and_due(self):
         ctx = _context(action_items=[
-            {"description": "Send capacity sizing doc", "owner": "Kola", "due": "Fri"},
+            {"description": "Send capacity sizing doc", "owner": "Alex", "due": "Fri"},
         ])
         out = deliverables._action_item_table(ctx)
         assert "| # | Action | Owner | Due |" in out
-        assert "| 1 | Send capacity sizing doc | Kola | Fri |" in out
+        assert "| 1 | Send capacity sizing doc | Alex | Fri |" in out
 
     def test_missing_owner_due_default_dash(self):
         ctx = _context(action_items=[{"description": "Follow up"}])

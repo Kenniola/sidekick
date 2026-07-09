@@ -25,7 +25,7 @@ All notable changes to sidekick-copilot are documented in this file.
   participant), so the query failed. Now sends a clean, single-line research
   instruction the agent acts on with the Sidekick research tool. (`sidekick-notify`)
 - **Auto-suggest (`[ask]`) not appearing.** Feature was correct but off by
-  default; enabled on the `moj` profile (`sensitivity.auto_suggest: true`).
+  default; enable it per profile with `sensitivity.auto_suggest: true`.
 
 ### Added
 - **Phase 9.3 (accuracy spec) — proactive advisor (opt-in).** When

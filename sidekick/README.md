@@ -73,7 +73,7 @@ All tiers retry with exponential backoff (1s → 2s → 4s) and fall through the
 ## How It Works
 
 ```
-@sidekick listen --config hmrc
+@sidekick listen --config acme
          │
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
