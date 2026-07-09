@@ -28,7 +28,7 @@ Alternatively, press `Win + R`, type `powershell`, press Enter.
 ### Step 2 — Paste this single line and press Enter
 
 ```powershell
-irm https://raw.githubusercontent.com/Kenniola/sidekick/main/sidekick/install.ps1 | iex
+irm https://raw.githubusercontent.com/Kenniola/sidekick-copilot/main/sidekick/install.ps1 | iex
 ```
 
 The installer will:

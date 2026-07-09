@@ -3,7 +3,7 @@
 # Everything else inherits from the built-in defaults.
 #
 # Usage: @sidekick listen --config acme
-# Full config reference: https://github.com/Kenniola/sidekick#configuration
+# Full config reference: https://github.com/Kenniola/sidekick-copilot#configuration
 
 acme:
   customer: Acme Corp

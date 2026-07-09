@@ -45,11 +45,11 @@ from sidekick.prompt_budget import clip
 
 logger = logging.getLogger("sidekick")
 
-# Install source for sidekick-copilot. Distribution is a private Git repo
-# (decision: keep in Git, not public). Override with SIDEKICK_REPO_URL.
+# Install source for sidekick-copilot. Distribution is a public Git repo.
+# Override with SIDEKICK_REPO_URL.
 _REPO_URL = os.environ.get(
     "SIDEKICK_REPO_URL",
-    "git+https://github.com/Kenniola/sidekick.git#subdirectory=sidekick",
+    "git+https://github.com/Kenniola/sidekick-copilot.git#subdirectory=sidekick",
 )
 
 
