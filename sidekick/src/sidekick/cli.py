@@ -16,6 +16,22 @@ import sys
 from pathlib import Path
 
 
+def _force_utf8_output() -> None:
+    """Make stdout/stderr UTF-8 so glyphs (✓, ⚠, —) never crash the CLI.
+
+    On Windows the console/pipe encoding is often cp1252 (or the OEM code
+    page); printing a checkmark then raises ``UnicodeEncodeError`` and aborts
+    commands like ``init``/``uninstall`` mid-run — especially when output is
+    piped. Reconfiguring to UTF-8 with ``errors="replace"`` is a safe no-op
+    where it's already UTF-8.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass  # not a reconfigurable text stream (e.g. redirected buffer)
+
+
 def _get_user_dir() -> Path:
     """Return ~/.sidekick/."""
     import os
@@ -709,6 +725,7 @@ def _unregister_mcp_server():
 
 def main():
     """CLI entry point: sidekick <command>."""
+    _force_utf8_output()
     args = sys.argv[1:]
 
     if not args or args[0] in ("-h", "--help", "help"):

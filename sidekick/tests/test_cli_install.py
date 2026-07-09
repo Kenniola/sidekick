@@ -24,6 +24,33 @@ class TestRegisterMcpServer:
         assert server["env"]["SIDEKICK_WORKSPACE_ROOT"] == "${workspaceFolder}"
 
 
+class TestForceUtf8Output:
+    def test_reconfigures_streams_to_utf8(self, monkeypatch):
+        calls = []
+
+        class _FakeStream:
+            encoding = "cp1252"
+
+            def reconfigure(self, **kwargs):
+                calls.append(kwargs)
+
+        monkeypatch.setattr(cli.sys, "stdout", _FakeStream())
+        monkeypatch.setattr(cli.sys, "stderr", _FakeStream())
+        cli._force_utf8_output()
+        assert calls == [
+            {"encoding": "utf-8", "errors": "replace"},
+            {"encoding": "utf-8", "errors": "replace"},
+        ]
+
+    def test_survives_non_reconfigurable_stream(self, monkeypatch):
+        class _Plain:
+            pass  # no reconfigure() — e.g. a redirected buffer
+
+        monkeypatch.setattr(cli.sys, "stdout", _Plain())
+        monkeypatch.setattr(cli.sys, "stderr", _Plain())
+        cli._force_utf8_output()  # must not raise
+
+
 class TestRunningInsideUvTool:
     def test_true_when_executable_under_uv_tools(self, monkeypatch):
         monkeypatch.setattr(

@@ -7,6 +7,14 @@ All notable changes to sidekick-copilot are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- **`sidekick uninstall`/`init` crashed on non-UTF-8 consoles.** The CLI prints
+  status glyphs (`✓`, `⚠`, `—`); on a cp1252 console (common on Windows,
+  especially when output is piped) that raised `UnicodeEncodeError` and aborted
+  the command mid-run. The CLI now forces UTF-8 on stdout/stderr at startup.
+  (`tests/test_cli_install.py`)
+- **Stale bundled extension on clean installs.** `sidekick init` installs the
+  extension force-included in the package, which had drifted to 0.3.0 while the
+  source was 0.7.1 — so fresh machines got an old feed UI. Rebundled 0.7.1.
 - **Cross-pass duplicate findings.** The adjudicator now carries **session
   memory** of questions already surfaced and suppresses re-asks even when
   reworded/rescoped (e.g. the six "is there a Fabric-specific advantage to
